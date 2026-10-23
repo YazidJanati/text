@@ -540,6 +540,7 @@ async function addFolder(
       draggedEntry = entry;
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("application/x-text-entry", entry.path);
+      event.dataTransfer.setData("text/plain", entry.name);
     };
     row.ondragend = () => {
       draggedEntry = null;
@@ -718,6 +719,13 @@ $("sidebar").addEventListener("drop", (event) => {
   draggedEntry = null;
   if (destination && entry)
     void action(() => moveEntry(entry, destination.path), () => focusEntry(treeFocusedPath));
+});
+// A library drag only moves within the tree; do not insert its name into a note.
+document.addEventListener("drop", (event) => {
+  if (!draggedEntry) return;
+  event.preventDefault();
+  draggedEntry = null;
+  clearDropTarget();
 });
 let shortcutsFocus: HTMLElement | null = null;
 function showShortcuts() {
