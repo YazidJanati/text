@@ -152,9 +152,10 @@ async function native(
             persist();
             return { path: args.path, content: args.content };
           }
-          if (command === "rename_entry") {
-            const target =
-              args.path.slice(0, args.path.lastIndexOf("/") + 1) +
+          if (command === "rename_entry" || command === "move_entry") {
+            const target = command === "move_entry"
+              ? args.parent + "/" + args.path.split("/").at(-1)
+              : args.path.slice(0, args.path.lastIndexOf("/") + 1) +
               args.name +
               (w.testFiles[args.path] === null
                 ? ""
@@ -199,6 +200,9 @@ async function native(
         },
       };
       w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+      w.fireShortcuts = () => callbacks.get(listeners.get("show-shortcuts"))?.({
+        event: "show-shortcuts", payload: null,
+      });
       w.fireCloseNote = () =>
         callbacks.get(listeners.get("close-note"))?.({
           event: "close-note",
@@ -774,4 +778,179 @@ test("closing a protected note clears editor undo and Vim registers", async ({
   await page.keyboard.type("p");
   await page.keyboard.type("u");
   await expect(page.locator(".cm-content")).not.toContainText("Secret");
+});
+
+
+const fileRow = (page: Page, path: string) => page.locator(`.file-row[data-path="${path}"]`);
+
+test("drag a note into a collapsed folder and back to the root, preserving edits and restart path", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "", "/notes/work": null });
+  await replace(page, "Pending before moving");
+  await fileRow(page, "/notes/Untitled.md").dragTo(fileRow(page, "/notes/work"));
+  await expect(fileRow(page, "/notes/work/Untitled.md")).toBeVisible();
+  await expect(fileRow(page, "/notes/work")).toHaveAttribute("aria-expanded", "true");
+  expect(await disk(page, "/notes/work/Untitled.md")).toBe("Pending before moving");
+  expect(await disk(page)).toBeUndefined();
+  await replace(page, "Edited after moving");
+  await page.keyboard.press(`${mod}+s`);
+  await page.reload();
+  await expect(page.locator(".cm-content")).toHaveText("Edited after moving");
+  await fileRow(page, "/notes/work/Untitled.md").dragTo(page.locator("#files"), {
+    targetPosition: { x: 80, y: 250 },
+  });
+  await expect(fileRow(page, "/notes/Untitled.md")).toBeVisible();
+  expect(await disk(page)).toBe("Edited after moving");
+  await expect(page.locator(".drop-target")).toHaveCount(0);
+});
+
+test("moving a folder keeps the open descendant editable and follows it on restart", async ({ page }) => {
+  await native(page, {
+    "/notes/work": null, "/notes/work/active.md": "nested",
+    "/notes/archive": null,
+  });
+  await replace(page, "Saved inside the moved folder");
+  await fileRow(page, "/notes/work").dragTo(fileRow(page, "/notes/archive"));
+  await expect(fileRow(page, "/notes/archive/work/active.md")).toBeVisible();
+  await replace(page, "Still editable");
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page, "/notes/archive/work/active.md")).toBe("Still editable");
+  expect(await disk(page, "/notes/work/active.md")).toBeUndefined();
+  await page.reload();
+  await expect(page.locator(".cm-content")).toHaveText("Still editable");
+});
+
+test("dragging a closed password note moves it without unlocking and keeps the password", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "secret", "/notes/work": null });
+  await protect(page);
+  await page.keyboard.press("Control+w");
+  await fileRow(page, "/notes/Untitled.textlock").dragTo(fileRow(page, "/notes/work"));
+  await expect(fileRow(page, "/notes/work/Untitled.textlock")).toBeVisible();
+  await expect(page.locator("#password-dialog")).toBeHidden();
+  await expect(page.locator("#editor")).toBeHidden();
+  expect(await disk(page, "/notes/work/Untitled.textlock")).toBe("encrypted");
+  await fileRow(page, "/notes/work/Untitled.textlock").click();
+  await expect(page.locator("#password-dialog")).toBeVisible();
+  await page.getByLabel("Password", { exact: true }).fill("test-only password");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.locator(".cm-content")).toHaveText("secret");
+  await replace(page, "Still protected after moving");
+  await page.keyboard.press(`${mod}+s`);
+  await page.keyboard.press("Control+w");
+  await fileRow(page, "/notes/work/Untitled.textlock").click();
+  await expect(page.locator("#password-dialog")).toBeVisible();
+});
+
+test("drop collisions preserve both notes and folders cannot be dropped into descendants", async ({ page }) => {
+  await native(page, {
+    "/notes/Untitled.md": "source", "/notes/work": null,
+    "/notes/work/Untitled.md": "destination", "/notes/work/sub": null,
+  });
+  await fileRow(page, "/notes/Untitled.md").dragTo(fileRow(page, "/notes/work"));
+  await expect(page.locator("#notice")).toContainText("already exists");
+  expect(await disk(page)).toBe("source");
+  expect(await disk(page, "/notes/work/Untitled.md")).toBe("destination");
+  await fileRow(page, "/notes/work").click();
+  await fileRow(page, "/notes/work").dragTo(fileRow(page, "/notes/work/sub"));
+  expect(await page.evaluate(() => (window as any).calls.filter((c: any) => c.command === "move_entry").length)).toBe(1);
+  expect(await disk(page, "/notes/work")).toBeNull();
+  await expect(page.locator(".drop-target")).toHaveCount(0);
+});
+
+test("a failed save prevents moving the current note", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "before", "/notes/work": null });
+  await page.evaluate(() => { (window as any).testFiles["/notes/Untitled.md"] = "external"; });
+  await replace(page, "my pending edits");
+  await fileRow(page, "/notes/Untitled.md").dragTo(fileRow(page, "/notes/work"));
+  await expect(page.locator("#notice")).toContainText("changed on disk");
+  expect(await disk(page)).toBe("external");
+  expect(await disk(page, "/notes/work/Untitled.md")).toBeUndefined();
+  await expect(page.locator(".cm-content")).toHaveText("my pending edits");
+});
+
+test("browser preview also persists note moves", async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("notes:preview-library")) localStorage.setItem("notes:preview-library", JSON.stringify({
+      "/notes/Untitled.md": "preview", "/notes/work": null,
+    }));
+  });
+  await page.goto("/");
+  await fileRow(page, "/notes/Untitled.md").dragTo(fileRow(page, "/notes/work"));
+  await expect(fileRow(page, "/notes/work/Untitled.md")).toBeVisible();
+  await page.reload();
+  await expect(page.locator(".cm-content")).toHaveText("preview");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("notes:preview-library")!)["/notes/work/Untitled.md"])).toBe("preview");
+});
+
+
+test("F1 opens the shortcut reference and Escape restores editing without changing Vim or content", async ({ page }) => {
+  await native(page);
+  await page.keyboard.type("iKeep this");
+  await page.keyboard.press("F1");
+  const dialog = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Toggle sidebar");
+  await expect(dialog).toContainText("Toggle Vim");
+  await expect(dialog).toContainText("Enter / F2");
+  await expect(dialog).toContainText(":mkdir Name");
+  await page.evaluate(() => (window as any).fireCloseNote());
+  await page.keyboard.press("Control+w");
+  await expect(page.locator("#editor")).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("textbox", { name: "Markdown editor" })).toBeFocused();
+  await expect(page.locator("#vim-mode")).toHaveText("[insert]");
+  await page.keyboard.type(" writing");
+  await expect(page.locator(".cm-content")).toHaveText("Keep this writing");
+});
+
+test("native Help menu opens shortcuts and leaves a rename dialog alone", async ({ page }) => {
+  await native(page);
+  const row = fileRow(page, "/notes/Untitled.md");
+  await row.focus();
+  await page.evaluate(() => (window as any).fireShortcuts());
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
+  await page.getByRole("button", { name: "Close shortcuts" }).click();
+  await expect(row).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#name-dialog")).toBeVisible();
+  await page.keyboard.press("F1");
+  await page.evaluate(() => (window as any).fireShortcuts());
+  await expect(page.locator("#shortcuts-dialog")).toBeHidden();
+  await expect(page.locator("#name-dialog")).toBeVisible();
+});
+
+
+test("inline math renders after closing dollar and space without Enter, and clicking edits the source", async ({ page }) => {
+  await native(page);
+  await replace(page, "$E=mc^2$");
+  await expect(page.locator(".math-inline")).toHaveCount(0);
+  await page.keyboard.type(" ");
+  await expect(page.locator(".math-inline .katex")).toHaveCount(1);
+  await expect(page.locator(".cm-line")).toHaveCount(1);
+  await page.keyboard.type("and $x^2$");
+  await expect(page.locator(".math-inline .katex")).toHaveCount(1);
+  await page.keyboard.type(" ");
+  await expect(page.locator(".math-inline .katex")).toHaveCount(2);
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe("$E=mc^2$ and $x^2$ ");
+  await page.locator(".math-inline").first().click();
+  await expect(page.locator(".math-inline .katex")).toHaveCount(1);
+  await expect(page.locator(".cm-content")).toContainText("$E=mc^2$");
+  await page.keyboard.press("End");
+  await expect(page.locator(".math-inline .katex")).toHaveCount(2);
+});
+
+test("inline math stays rendered on the following space in Vim normal mode", async ({ page }) => {
+  await native(page);
+  await page.keyboard.type("i$x^2$");
+  await expect(page.locator(".math-inline")).toHaveCount(0);
+  await page.keyboard.type(" ");
+  await expect(page.locator(".math-inline .katex")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#vim-mode")).toHaveText("[normal]");
+  await expect(page.locator(".math-inline .katex")).toHaveCount(1);
+  await page.keyboard.press("h");
+  await expect(page.locator(".math-inline")).toHaveCount(0);
+  await expect(page.locator(".cm-content")).toContainText("$x^2$");
 });

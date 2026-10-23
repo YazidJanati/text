@@ -129,6 +129,9 @@ svg {
   padding: 5px 6px 20px;
 }
 .file-row {
+  -webkit-user-drag: element;
+  -webkit-user-select: none;
+  user-select: none;
   width: 100%;
   display: flex;
   align-items: center;
@@ -142,6 +145,15 @@ svg {
 .file-row.selected {
   background: #292c2d;
   color: #ddd;
+}
+#files.drop-target {
+  box-shadow: inset 0 0 0 1px #777;
+}
+.file-row.drop-target {
+  background: #353b3e;
+  outline: 1px solid #777;
+  outline-offset: -1px;
+  color: #eee;
 }
 .file-row[aria-current] {
   color: #e4e4e4;
@@ -362,6 +374,43 @@ dialog p {
   padding: 7px 11px;
   border: 1px solid #444;
   border-radius: 3px;
+}
+#shortcuts-dialog {
+  width: 660px;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+.shortcuts-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+}
+.shortcuts-heading h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.shortcut-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px 28px;
+}
+.shortcut-groups h3 {
+  margin: 0 0 7px;
+  color: #aaa;
+  font-size: 11px;
+  font-weight: 400;
+}
+.shortcut-groups table { width: 100%; border-collapse: collapse; }
+.shortcut-groups th, .shortcut-groups td { padding: 5px 0; font-size: 11px; }
+.shortcut-groups th { text-align: left; font-weight: 400; color: #bbb; }
+.shortcut-groups td { text-align: right; white-space: nowrap; padding-left: 10px; }
+.shortcut-groups kbd, .shortcut-commands code { font: inherit; color: #eee; }
+.shortcut-commands { margin: 22px 0 12px; font-size: 11px; }
+.shortcut-footnote { margin: 0; color: #999; font-size: 11px; }
+@media (max-width: 580px) {
+  .shortcut-groups { grid-template-columns: 1fr; }
 }
 #context-menu {
   position: fixed;

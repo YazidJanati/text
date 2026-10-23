@@ -9,10 +9,35 @@ import type { DocumentFile, Workspace, Entry } from "./types";
 const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
 const tool = (id: string, glyph: string, label: string, shortcut = "") =>
   `<button id="${id}" class="icon-button" aria-label="${label}" title="${label}${shortcut ? ` (${shortcut})` : ""}">${icon(glyph)}</button>`;
+const shortcutGroup = (title: string, rows: [string, string][]) =>
+  `<section><h3>${title}</h3><table><tbody>${rows.map(([label, keys]) =>
+    `<tr><th scope="row">${label}</th><td><kbd>${keys}</kbd></td></tr>`).join("")}</tbody></table></section>`;
+const shortcuts = [
+  shortcutGroup("Notes", [
+    ["New note", mod + "N"], ["New folder", mod + "Shift+N"],
+    ["Save", mod + "S"], ["Close note", mod === "⌘" ? "⌘W / Ctrl+W" : "Ctrl+W"],
+    ["Import Markdown", mod + "O"], ["Export Markdown", mod + "Shift+S"],
+  ]),
+  shortcutGroup("Sidebar", [
+    ["Toggle sidebar", mod + "B"], ["Navigate / expand", "↑ ↓ ← →"],
+    ["Rename focused item", "Enter / F2"], ["Move to trash", "Delete"],
+    ["Return to editor", "Esc"],
+  ]),
+  shortcutGroup("Editing · Vim off", [
+    ["Find", mod + "F"], ["Bold", mod + "Shift+B"],
+    ["Italic", mod + "I"], ["Insert link", mod + "K"],
+  ]),
+  shortcutGroup("Vim", [
+    ["Toggle Vim", mod + "Alt+V"], ["Insert / normal mode", "i / Esc"],
+    ["Visual mode", "v"], ["Move", "h j k l"],
+    ["Search / next match", "/ / n"], ["Undo / redo", "u / Ctrl+R"],
+  ]),
+].join("");
 document.querySelector("#app")!.innerHTML = `
 <aside id="sidebar" aria-label="Notes"><div class="sidebar-heading"><span>text</span><div>${tool("new-folder", "folderPlus", "New folder", mod + "⇧N")}${tool("new-note", "plus", "New note", mod + "N")}</div></div><nav id="files" aria-label="Files"></nav></aside>
 <main><header>${tool("toggle-sidebar", "sidebar", "Toggle sidebar", mod + "B")}<button id="document-name" title="Rename (F2)"></button><span id="dirty" hidden aria-label="Unsaved changes"></span><span id="vim-mode" role="status" aria-label="Vim mode"></span><button id="vim-toggle" type="button"></button></header><div id="editor"></div></main>
 <div id="notice" role="alert" hidden><span></span><button aria-label="Dismiss">×</button></div>
+<dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts">×</button></div><div class="shortcut-groups">${shortcuts}</div><p class="shortcut-commands"><code>:w</code> save · <code>:q</code> quit · <code>:wq</code> save &amp; quit<br><code>:new Name</code> new note · <code>:mkdir Name</code> new folder</p><p class="shortcut-footnote">Drag items onto a folder to move them; drop into empty sidebar space for the top level.<br>F1 opens this reference · Esc closes it.</p></dialog>
 <dialog id="name-dialog"><form><label id="name-label" for="name-input"></label><input id="name-input" autocomplete="off" maxlength="120" required><div class="dialog-actions"><button type="button" id="name-cancel">Cancel</button><button type="submit" id="name-submit">Create</button></div></form></dialog>
 <dialog id="unsaved"><form><p>Couldn’t save this note.</p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="discard">Discard</button><button value="export">Export copy</button></div></form></dialog>
 <dialog id="password-dialog"><form><h2 id="password-heading"></h2><label for="password-input">Password</label><input id="password-input" type="password" maxlength="1024" required><div id="password-confirm-row"><label for="password-confirm">Confirm password</label><input id="password-confirm" type="password" maxlength="1024" autocomplete="new-password"></div><p id="password-hint">No recovery if forgotten.</p><p id="password-error" role="alert" hidden></p><div class="dialog-actions"><button id="password-cancel" type="button">Cancel</button><button id="password-submit" type="submit"></button></div></form></dialog>
@@ -36,6 +61,7 @@ let context: Entry | null = null;
 const expanded = new Set<string>();
 const treeEntries = new Map<string, Entry>();
 let treeFocusedPath: string | null = null;
+let draggedEntry: Entry | null = null;
 const editor = createEditor($("editor"), "", changed);
 void document.fonts.ready.then(() => editor.requestMeasure());
 function text() {
@@ -427,30 +453,43 @@ async function renameEntry(entry: Entry) {
   );
   if (!name) return;
   const next = await storage.rename(entry.path, name);
-  if (treeFocusedPath === entry.path) treeFocusedPath = next;
-  if (
-    path === entry.path ||
-    path?.startsWith(entry.path + "/") ||
-    path?.startsWith(entry.path + "\\")
-  ) {
-    path = next + path.slice(entry.path.length);
+  remapEntry(entry.path, next);
+  await renderFiles();
+  updateStatus();
+}
+function within(candidate: string | null, ancestor: string): candidate is string {
+  return candidate !== null &&
+    (candidate === ancestor || candidate.startsWith(ancestor + "/") ||
+      candidate.startsWith(ancestor + "\\"));
+}
+function remapEntry(previous: string, next: string) {
+  if (within(treeFocusedPath, previous))
+    treeFocusedPath = next + treeFocusedPath.slice(previous.length);
+  if (within(path, previous)) {
+    path = next + path.slice(previous.length);
     remember("last-note", path);
   }
-  if (
-    selectedFolder === entry.path ||
-    selectedFolder?.startsWith(entry.path + "/") ||
-    selectedFolder?.startsWith(entry.path + "\\")
-  )
-    selectedFolder = next + selectedFolder.slice(entry.path.length);
+  if (within(selectedFolder, previous))
+    selectedFolder = next + selectedFolder.slice(previous.length);
   for (const folder of [...expanded])
-    if (
-      folder === entry.path ||
-      folder.startsWith(entry.path + "/") ||
-      folder.startsWith(entry.path + "\\")
-    ) {
+    if (within(folder, previous)) {
       expanded.delete(folder);
-      expanded.add(next + folder.slice(entry.path.length));
+      expanded.add(next + folder.slice(previous.length));
     }
+}
+async function moveEntry(entry: Entry, destination: string) {
+  // A failed save leaves both the editor and the file in place.
+  if (!(await flush())) return;
+  const next = await storage.move(entry.path, destination);
+  remapEntry(entry.path, next);
+  selectedFolder = destination;
+  treeFocusedPath = next;
+  let ancestor = destination;
+  while (workspace && ancestor !== workspace.path &&
+    within(ancestor, workspace.path)) {
+    expanded.add(ancestor);
+    ancestor = ancestor.slice(0, Math.max(ancestor.lastIndexOf("/"), ancestor.lastIndexOf("\\")));
+  }
   await renderFiles();
   updateStatus();
 }
@@ -492,6 +531,20 @@ async function addFolder(
     row.className = "file-row";
     row.dataset.path = entry.path;
     row.dataset.parent = folder;
+    row.draggable = true;
+    row.ondragstart = (event) => {
+      if (busy || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      draggedEntry = entry;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-text-entry", entry.path);
+    };
+    row.ondragend = () => {
+      draggedEntry = null;
+      clearDropTarget();
+    };
     treeEntries.set(entry.path, entry);
     row.onfocus = () => {
       treeFocusedPath = entry.path;
@@ -628,6 +681,56 @@ $("files").addEventListener("keydown", (event) => {
     editor.focus();
   }
 });
+function clearDropTarget() {
+  document.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+}
+function dropDestination(event: DragEvent) {
+  if (!draggedEntry || busy || !workspace) return null;
+  const target = event.target instanceof Element ? event.target : null;
+  const row = target?.closest<HTMLElement>(".file-row");
+  const folder = row ? treeEntries.get(row.dataset.path!) : null;
+  if (row && !folder?.directory) return null;
+  const destination = folder?.path || workspace.path;
+  const sourceParent = draggedEntry.path.slice(0,
+    Math.max(draggedEntry.path.lastIndexOf("/"), draggedEntry.path.lastIndexOf("\\")));
+  if (destination === sourceParent || within(destination, draggedEntry.path)) return null;
+  return { path: destination, element: row || $("files") };
+}
+$("sidebar").addEventListener("dragover", (event) => {
+  const destination = dropDestination(event);
+  clearDropTarget();
+  if (!destination) {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  destination.element.classList.add("drop-target");
+});
+$("sidebar").addEventListener("dragleave", (event) => {
+  if (!(event.relatedTarget instanceof Node) || !$("sidebar").contains(event.relatedTarget))
+    clearDropTarget();
+});
+$("sidebar").addEventListener("drop", (event) => {
+  const destination = dropDestination(event), entry = draggedEntry;
+  event.preventDefault();
+  clearDropTarget();
+  draggedEntry = null;
+  if (destination && entry)
+    void action(() => moveEntry(entry, destination.path), () => focusEntry(treeFocusedPath));
+});
+let shortcutsFocus: HTMLElement | null = null;
+function showShortcuts() {
+  if (document.querySelector("dialog[open]")) return;
+  shortcutsFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  $<HTMLDialogElement>("shortcuts-dialog").showModal();
+}
+$("close-shortcuts").onclick = () => $<HTMLDialogElement>("shortcuts-dialog").close();
+$("shortcuts-dialog").addEventListener("close", () => {
+  if (shortcutsFocus?.isConnected) shortcutsFocus.focus();
+  else if (path) editor.focus();
+  shortcutsFocus = null;
+});
 function toggleSidebar() {
   sidebarHidden = !sidebarHidden;
   document.body.classList.toggle("sidebar-hidden", sidebarHidden);
@@ -729,6 +832,12 @@ document.addEventListener(
   "keydown",
   (event) => {
     if (event.isComposing) return;
+    if (event.key === "F1" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      showShortcuts();
+      return;
+    }
     if (
       (event.ctrlKey || event.metaKey) &&
       !event.altKey &&
@@ -809,7 +918,10 @@ if (desktop) {
   import("@tauri-apps/api/event")
     .then(async ({ listen }) => {
       await listen("request-quit", close);
-      await listen("close-note", () => void action(closeCurrent));
+      await listen("close-note", () => {
+        if (!document.querySelector("dialog[open]")) void action(closeCurrent);
+      });
+      await listen("show-shortcuts", showShortcuts);
     })
     .catch(notice);
   import("@tauri-apps/api/window")

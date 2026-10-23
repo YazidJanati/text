@@ -35,9 +35,11 @@ The provided Mac app is a local, ad-hoc signed build, not a notarized release. N
 
 ## Use
 
+Open **Help → Keyboard Shortcuts** (or press **F1**, sometimes **Fn+F1** on laptops) for the in-app reference. Escape closes it and returns to where you were editing.
+
 text opens to a blank note in its own library. It saves after 500 ms of inactivity, on focus loss, and before switching notes or quitting. Unprotected files remain ordinary UTF-8 `.md` files. Password-protected notes use encrypted `.textlock` files. The app does not require you to choose a storage folder or handle Save dialogs.
 
-Create notes and folders with the two sidebar controls or shortcuts. New items go into the selected folder; click empty sidebar space to select the library root. Click a folder to expand it. Rename a focused sidebar item with Enter or F2. Arrow keys navigate the file tree; Left/Right collapse and expand folders, Delete moves an item to trash, and Escape returns to the editor. You can also rename through the document title, a double click, or the context menu. The context menu also moves a note or folder to the app's local trash, preserving its contents.
+Create notes and folders with the two sidebar controls or shortcuts. New items go into the selected folder; click empty sidebar space to select the library root. Click a folder to expand it. Drag notes or folders onto a folder to move them. Drop into empty sidebar space (or the text heading) to move them back to the library root. The destination highlights while dragging, and opens after a successful drop. Existing names are never overwritten; protected notes keep their encryption. Rename a focused sidebar item with Enter or F2. Arrow keys navigate the file tree; Left/Right collapse and expand folders, Delete moves an item to trash, and Escape returns to the editor. You can also rename through the document title, a double click, or the context menu. The context menu also moves a note or folder to the app's local trash, preserving its contents.
 
 Vim is **on by default**. The header button explicitly shows `vim:on` or `vim:off`; click it to switch. The adjacent `[normal]` / `[insert]` / `[visual]` text only reports the editing mode. Press `i` to write, `Esc` for normal mode, `v` for visual mode, and `/` to search. Motions, operators, counts, registers, macros, and undo are supplied by the CodeMirror Vim adapter. It is an embedded Vim editing layer, not the Neovim runtime: there are no Vim plugins, shell commands, splits, or `.vimrc` loading.
 
@@ -71,7 +73,7 @@ The app autosaves, so `:q` also flushes pending edits. An external-change confli
 
 The sidebar shortcut has priority over Vim's Ctrl+B page motion. Sidebar visibility, Vim preference, and the last note are remembered. Notes inside collapsed folders open with their ancestors expanded.
 
-Markdown markers are visible on the line containing the cursor and are rendered inline elsewhere. Headings, emphasis, lists, tasks, blockquotes, rules, code, and links are supported. Clicking a rendered equation reveals its source. Use `$E=mc^2$` for inline math and `$$` on separate lines for display math:
+Markdown markers are visible on the line containing the cursor and are rendered inline elsewhere. Headings, emphasis, lists, tasks, blockquotes, rules, code, and links are supported. Inline equations render as soon as the closing `$` is followed by a space; you can keep writing on the same line. Clicking a rendered equation, selecting it, or moving the cursor inside reveals its source. Display equations stay editable while the cursor is in their block. Use `$E=mc^2$` for inline math and `$$` on separate lines for display math:
 
 ```markdown
 $$

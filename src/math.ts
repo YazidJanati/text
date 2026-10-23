@@ -103,11 +103,19 @@ function decorations(state: EditorState, ranges: MathRange[]): DecorationSet {
     ranges
       .filter(
         (math) =>
-          !state.selection.ranges.some(
-            (range) =>
-              math.from <= state.doc.lineAt(range.to).to &&
-              math.to >= state.doc.lineAt(range.from).from,
-          ),
+          !state.selection.ranges.some((range) => {
+            if (math.display)
+              return math.from <= state.doc.lineAt(range.to).to &&
+                math.to >= state.doc.lineAt(range.from).from;
+            if (!range.empty)
+              return range.from < math.to && range.to > math.from;
+            // Keep the source while typing the closing $, then render after
+            // leaving the expression. In Vim normal mode the cursor can sit
+            // on the following space, which is outside the equation.
+            return range.from >= math.from && (range.from < math.to ||
+              (range.from === math.to &&
+                !/[ \t]/.test(state.doc.sliceString(math.to, math.to + 1))));
+          }),
       )
       .map((math) =>
         Decoration.replace({

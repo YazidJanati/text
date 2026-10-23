@@ -33,6 +33,7 @@ export interface Storage {
   createNote(parent: string, name?: string): Promise<DocumentFile>;
   createFolder(parent: string, name: string): Promise<string>;
   rename(path: string, name: string): Promise<string>;
+  move(path: string, parent: string): Promise<string>;
   trash(path: string): Promise<void>;
   importFile(parent: string): Promise<DocumentFile | null>;
   exportFile(content: string, suggested: string): Promise<boolean>;

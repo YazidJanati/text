@@ -413,17 +413,18 @@ pub fn run() {
                 root: Some(root.canonicalize()?),
                 opened: HashMap::new(),
             }));
-            #[cfg(target_os = "macos")]
-            {
-                let menu = native_menu(app.handle())?;
-                app.set_menu(menu)?;
-            }
+            let menu = native_menu(app.handle())?;
+            app.set_menu(menu)?;
             Ok(())
         })
-        .on_menu_event(|app, event| {
-            if event.id().as_ref() == "close-note" {
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "close-note" => {
                 let _ = app.emit("close-note", ());
             }
+            "shortcuts" => {
+                let _ = app.emit("show-shortcuts", ());
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             unlock_file,
@@ -434,6 +435,7 @@ pub fn run() {
             create_note,
             create_folder,
             rename_entry,
+            move_entry,
             trash_entry,
             import_file,
             quit,
@@ -610,6 +612,10 @@ fn rename_entry(path: String, name: String, state: State<'_, Mutex<Files>>) -> A
         return Err("That name already exists.".into());
     }
     fs::rename(&path, &target).map_err(|e| e.to_string())?;
+    remap_opened(&mut files, &path, &target);
+    Ok(display(&target))
+}
+fn remap_opened(files: &mut Files, path: &Path, target: &Path) {
     let old: Vec<_> = files
         .opened
         .keys()
@@ -619,12 +625,40 @@ fn rename_entry(path: String, name: String, state: State<'_, Mutex<Files>>) -> A
     for key in old {
         if let Some(value) = files.opened.remove(&key) {
             files.opened.insert(
-                target.join(key.strip_prefix(&path).map_err(|e| e.to_string())?),
+                target.join(key.strip_prefix(path).expect("matched path prefix")),
                 value,
             );
         }
     }
+}
+fn move_managed(files: &mut Files, source: &str, parent: &str) -> AppResult<String> {
+    let path = library_path(files, source)?;
+    let parent = library_path(files, parent)?;
+    if path == root_path(files)? {
+        return Err("The library itself cannot be moved.".into());
+    }
+    if !parent.is_dir() {
+        return Err("Choose a folder.".into());
+    }
+    if parent.starts_with(&path) {
+        return Err("A folder cannot be moved into itself.".into());
+    }
+    let target = parent.join(path.file_name().ok_or("Missing name.")?);
+    if target == path {
+        return Ok(display(&path));
+    }
+    // Also reject dangling symlinks, which must never be replaced by a drop.
+    if fs::symlink_metadata(&target).is_ok() {
+        return Err("That name already exists in this folder.".into());
+    }
+    fs::rename(&path, &target).map_err(|e| e.to_string())?;
+    remap_opened(files, &path, &target);
     Ok(display(&target))
+}
+#[tauri::command]
+fn move_entry(path: String, parent: String, state: State<'_, Mutex<Files>>) -> AppResult<String> {
+    let mut files = state.lock().map_err(|e| e.to_string())?;
+    move_managed(&mut files, &path, &parent)
 }
 #[tauri::command]
 fn trash_entry(path: String, state: State<'_, Mutex<Files>>) -> AppResult<()> {
@@ -672,6 +706,72 @@ async fn import_file(
 #[cfg(test)]
 mod library_tests {
     use super::*;
+    #[test]
+    fn moving_an_open_note_keeps_saving_at_its_new_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let destination = root.join("work");
+        fs::create_dir(&destination).unwrap();
+        let mut files = Files {
+            root: Some(root.clone()),
+            ..Files::default()
+        };
+        let doc = create_managed(&mut files, &display(&root), "Thought", "before".into()).unwrap();
+        let moved = move_managed(&mut files, &doc.path, &display(&destination)).unwrap();
+        assert!(!Path::new(&doc.path).exists());
+        assert!(!files.opened.contains_key(Path::new(&doc.path)));
+        save_checked(&mut files, Path::new(&moved), "after".into(), doc.content).unwrap();
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "after");
+        let back = move_managed(&mut files, &moved, &display(&root)).unwrap();
+        assert_eq!(back, doc.path);
+        assert_eq!(fs::read_to_string(back).unwrap(), "after");
+    }
+    #[test]
+    fn moves_reject_collisions_cycles_and_paths_outside_the_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let folder = root.join("work");
+        let sub = folder.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let mut files = Files {
+            root: Some(root.clone()),
+            ..Files::default()
+        };
+        let doc = create_managed(&mut files, &display(&root), "Note", "source".into()).unwrap();
+        fs::write(folder.join("Note.md"), "destination").unwrap();
+        assert!(move_managed(&mut files, &doc.path, &display(&folder)).is_err());
+        assert_eq!(fs::read_to_string(&doc.path).unwrap(), "source");
+        assert_eq!(
+            fs::read_to_string(folder.join("Note.md")).unwrap(),
+            "destination"
+        );
+        assert!(move_managed(&mut files, &display(&folder), &display(&sub)).is_err());
+        assert!(move_managed(&mut files, &display(&folder), &display(&folder)).is_err());
+        assert!(move_managed(&mut files, &display(&root), &display(&sub)).is_err());
+        assert!(move_managed(&mut files, &doc.path, &display(outside.path())).is_err());
+        assert!(move_managed(&mut files, &doc.path, &doc.path).is_err());
+        assert_eq!(
+            move_managed(&mut files, &doc.path, &display(&root)).unwrap(),
+            doc.path
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn moves_reject_external_symlink_destinations() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let link = root.join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        let mut files = Files {
+            root: Some(root.clone()),
+            ..Files::default()
+        };
+        let doc = create_managed(&mut files, &display(&root), "Note", "source".into()).unwrap();
+        assert!(move_managed(&mut files, &doc.path, &display(&link)).is_err());
+        assert!(Path::new(&doc.path).exists());
+    }
     #[test]
     fn managed_notes_have_unique_names_and_stay_plain_markdown() {
         let dir = tempfile::tempdir().unwrap();
@@ -731,12 +831,12 @@ mod library_tests {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn native_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
     Menu::with_items(
         app,
         &[
+            #[cfg(target_os = "macos")]
             &Submenu::with_items(
                 app,
                 "text",
@@ -778,6 +878,7 @@ fn native_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
                     &PredefinedMenuItem::select_all(app, None)?,
                 ],
             )?,
+            #[cfg(target_os = "macos")]
             &Submenu::with_items(
                 app,
                 "Window",
@@ -786,6 +887,18 @@ fn native_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
                     &PredefinedMenuItem::minimize(app, None)?,
                     &PredefinedMenuItem::maximize(app, None)?,
                 ],
+            )?,
+            &Submenu::with_items(
+                app,
+                "Help",
+                true,
+                &[&MenuItem::with_id(
+                    app,
+                    "shortcuts",
+                    "Keyboard Shortcuts",
+                    true,
+                    Some("F1"),
+                )?],
             )?,
         ],
     )
@@ -847,6 +960,40 @@ mod protection_lifecycle_tests {
         fs::write(&doc.path, "external").unwrap();
         assert!(save_checked(&mut files, Path::new(&doc.path), "new".into(), doc.content).is_err());
         assert_eq!(fs::read_to_string(doc.path).unwrap(), "external");
+    }
+    #[test]
+    fn moving_a_folder_preserves_encryption_and_the_open_unlock_session() {
+        let (_dir, mut files, plain) = setup();
+        let root = root_path(&files).unwrap();
+        let folder = root.join("work");
+        let archive = root.join("archive");
+        fs::create_dir(&folder).unwrap();
+        fs::create_dir(&archive).unwrap();
+        let secured = protect_note(&mut files, &plain, "password", "# Secret\n").unwrap();
+        let original = fs::read(&secured.path).unwrap();
+        let inside = move_managed(&mut files, &secured.path, &display(&folder)).unwrap();
+        move_managed(&mut files, &display(&folder), &display(&archive)).unwrap();
+        let moved = archive.join("work").join("Private.textlock");
+        assert!(!Path::new(&inside).exists());
+        assert_eq!(fs::read(&moved).unwrap(), original);
+        save_checked(&mut files, &moved, "Edited secret".into(), secured.content).unwrap();
+        files.opened.clear();
+        assert!(load(&mut files, moved.clone()).is_err());
+        assert!(unlock_note(&mut files, &moved, "wrong").is_err());
+        assert_eq!(
+            unlock_note(&mut files, &moved, "password").unwrap().content,
+            "Edited secret"
+        );
+        files.opened.clear();
+        let closed_move = move_managed(&mut files, &display(&moved), &display(&root)).unwrap();
+        assert!(files.opened.is_empty());
+        assert!(load(&mut files, PathBuf::from(&closed_move)).is_err());
+        assert_eq!(
+            unlock_note(&mut files, Path::new(&closed_move), "password")
+                .unwrap()
+                .content,
+            "Edited secret"
+        );
     }
     #[test]
     fn switching_to_another_note_drops_the_unlock_session() {

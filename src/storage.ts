@@ -16,6 +16,7 @@ const native: Storage = {
     invoke("create_note", { parent, name: name || "Untitled" }),
   createFolder: (parent, name) => invoke("create_folder", { parent, name }),
   rename: (path, name) => invoke("rename_entry", { path, name }),
+  move: (path, parent) => invoke("move_entry", { path, parent }),
   trash: (path) => invoke("trash_entry", { path }),
   importFile: (parent) => invoke("import_file", { parent }),
   exportFile: async (content, suggested) =>
@@ -115,6 +116,24 @@ const browser: Storage = {
       valid(data[path] === null ? name : name.replace(/\.md$/i, "") + ".md");
     if (target === path) return path;
     if (target in data) throw new Error("That name already exists.");
+    for (const key of Object.keys(data))
+      if (key === path || key.startsWith(path + "/")) {
+        data[target + key.slice(path.length)] = data[key];
+        delete data[key];
+      }
+    persist();
+    return target;
+  },
+  move: async (path, parent) => {
+    if (!(path in data) || path === root)
+      throw new Error("Choose a note or folder.");
+    if (parent !== root && data[parent] !== null)
+      throw new Error("Choose a folder.");
+    if (parent === path || parent.startsWith(path + "/"))
+      throw new Error("A folder cannot be moved into itself.");
+    const target = parent + "/" + path.split("/").at(-1)!;
+    if (target === path) return path;
+    if (target in data) throw new Error("That name already exists in this folder.");
     for (const key of Object.keys(data))
       if (key === path || key.startsWith(path + "/")) {
         data[target + key.slice(path.length)] = data[key];
