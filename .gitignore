@@ -1,0 +1,10 @@
+node_modules/
+dist/
+src-tauri/target/
+test-results/
+playwright-report/
+.DS_Store
+src-tauri/gen/
+tests/*.png
+src-tauri/icons/android/
+src-tauri/icons/ios/

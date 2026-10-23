@@ -1,0 +1,483 @@
+@font-face {
+  font-family: "Text Mono";
+  src:
+    local("SFMono-Regular"), local("SF Mono Regular"), local("Menlo-Regular"),
+    local("Consolas"), local("Liberation Mono");
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Text Mono";
+  src:
+    local("SFMono-Bold"), local("Menlo-Bold"), local("Consolas Bold"),
+    local("Liberation Mono Bold");
+  font-weight: 700;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Text Mono";
+  src:
+    local("SFMono-RegularItalic"), local("Menlo-Italic"),
+    local("Consolas Italic"), local("Liberation Mono Italic");
+  font-weight: 400;
+  font-style: italic;
+}
+@font-face {
+  font-family: "Text Mono";
+  src:
+    local("SFMono-BoldItalic"), local("Menlo-BoldItalic"),
+    local("Consolas Bold Italic"), local("Liberation Mono Bold Italic");
+  font-weight: 700;
+  font-style: italic;
+}
+:root {
+  --font-mono:
+    "Text Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+  word-spacing: 0;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  color: #c7c7c7;
+  background: #1e1e1e;
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  font-size: 12px;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+}
+button,
+input {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+}
+button {
+  cursor: pointer;
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 1px solid #888;
+  outline-offset: -2px;
+}
+button:hover {
+  background: #ffffff09;
+}
+svg {
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+[hidden] {
+  display: none !important;
+}
+#app {
+  display: flex;
+  height: 100dvh;
+  min-height: 0;
+}
+#sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: #181818;
+  border-right: 1px solid #2a2a2a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-hidden #sidebar {
+  display: none;
+}
+.sidebar-heading {
+  height: 43px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 0 18px;
+  flex-shrink: 0;
+  color: #aaa;
+}
+.sidebar-heading > div {
+  display: flex;
+}
+.icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  flex-shrink: 0;
+}
+.icon-button:hover {
+  color: #ddd;
+}
+#files {
+  flex: 1;
+  overflow: auto;
+  padding: 5px 6px 20px;
+}
+.file-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 29px;
+  text-align: left;
+  border-radius: 2px;
+  color: #aaa;
+  padding-right: 10px;
+}
+.file-row.selected {
+  background: #292c2d;
+  color: #ddd;
+}
+.file-row[aria-current] {
+  color: #e4e4e4;
+}
+.file-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chevron {
+  width: 10px;
+  flex-shrink: 0;
+}
+.chevron svg {
+  width: 10px;
+  height: 10px;
+}
+.expanded .chevron svg {
+  transform: rotate(90deg);
+}
+main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+header {
+  height: 43px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+  border-bottom: 1px solid #282828;
+}
+#document-name {
+  font-size: 12px;
+  color: #aaa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 5px 6px;
+}
+#dirty {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #a0a0a0;
+  flex-shrink: 0;
+}
+#editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.md-heading {
+  font-weight: 600;
+  letter-spacing: 0;
+  color: #e0e0e0;
+  line-height: 1.5 !important;
+}
+.md-h1 {
+  font-size: 23px;
+  margin-top: 5px !important;
+  margin-bottom: 8px !important;
+}
+.md-h2 {
+  font-size: 19px;
+  margin-top: 12px !important;
+  margin-bottom: 4px !important;
+}
+.md-h3 {
+  font-size: 16px;
+  margin-top: 8px !important;
+}
+.md-h4,
+.md-h5,
+.md-h6 {
+  font-size: 15px;
+  margin-top: 5px !important;
+}
+.md-strong {
+  font-weight: 700;
+  color: #dedede;
+}
+.md-em {
+  font-style: italic;
+}
+.md-strike {
+  text-decoration: line-through;
+  color: #888;
+}
+.md-inline-code {
+  font-size: 0.95em;
+  background: #ffffff09;
+  color: #c7b09e;
+  border-radius: 3px;
+  padding: 2px 3px;
+}
+.md-link {
+  color: #9db6c6;
+  text-decoration: underline;
+  text-decoration-color: #9db6c650;
+  text-underline-offset: 3px;
+}
+.md-quote {
+  border-left: 2px solid #666;
+  padding-left: 16px !important;
+  color: #999;
+}
+.md-code-line {
+  background: #181818;
+  font-size: 14px;
+  padding-left: 14px !important;
+}
+.md-bullet {
+  color: #888;
+  display: inline-block;
+  text-align: center;
+  min-width: 10px;
+}
+.md-rule {
+  display: inline-block;
+  height: 1px;
+  background: #383838;
+  width: 100%;
+  vertical-align: middle;
+}
+.md-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid #777;
+  border-radius: 2px;
+  color: #ccc;
+  font-size: 11px;
+  vertical-align: middle;
+  padding: 0;
+  margin-right: 3px;
+}
+.math-inline {
+  cursor: text;
+}
+.math-block {
+  overflow-x: auto;
+  cursor: text;
+  padding: 8px 2px;
+  max-width: 100%;
+  color: #ddd;
+}
+.math-block .katex-display {
+  margin: 10px 0;
+}
+.katex {
+  font-size: 1.15em;
+}
+.katex-error {
+  color: #c58a80 !important;
+}
+#notice {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(660px, 90vw);
+  background: #282828;
+  border: 1px solid #5c5045;
+  box-shadow: 0 8px 30px #0005;
+  border-radius: 4px;
+  padding: 12px 12px 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  line-height: 1.7;
+  z-index: 10;
+}
+#notice button {
+  font-size: 20px;
+  flex-shrink: 0;
+  padding: 0 6px;
+}
+dialog {
+  color: #ddd;
+  background: #222;
+  border: 1px solid #444;
+  border-radius: 4px;
+  width: 370px;
+  max-width: 90vw;
+  padding: 22px;
+  box-shadow: 0 20px 70px #0007;
+}
+dialog::backdrop {
+  background: #0008;
+}
+dialog label {
+  display: block;
+  margin-bottom: 14px;
+}
+dialog input {
+  width: 100%;
+  background: #181818;
+  border: 1px solid #555;
+  padding: 9px 10px;
+}
+dialog p {
+  line-height: 1.7;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.dialog-actions button {
+  padding: 7px 11px;
+  border: 1px solid #444;
+  border-radius: 3px;
+}
+#context-menu {
+  position: fixed;
+  margin: 0;
+  padding: 4px;
+  background: #282828;
+  border: 1px solid #444;
+  border-radius: 3px;
+  min-width: 145px;
+  color: #ccc;
+}
+#context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+}
+.cm-search {
+  font-size: 12px;
+}
+.cm-search input {
+  max-width: 180px;
+}
+.cm-search button {
+  font-size: 11px;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #ffffff18;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #ffffff2a;
+}
+@media (max-width: 720px) {
+  #sidebar {
+    width: 180px;
+  }
+  .cm-content {
+    padding-left: 24px !important;
+    padding-right: 24px !important;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+}
+#vim-mode {
+  margin-left: auto;
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+  cursor: default;
+}
+#vim-toggle {
+  margin-left: 10px;
+  padding: 5px 6px;
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+}
+#vim-toggle[aria-pressed="true"] {
+  color: #91a78f;
+}
+#vim-mode[hidden] + #vim-toggle {
+  margin-left: auto;
+}
+.cm-vim-panel {
+  background: #181818;
+  color: #bbb;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  border-top: 1px solid #333;
+  padding: 5px 12px;
+}
+.cm-vim-panel input {
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+.cm-fat-cursor {
+  background: #bdbdbd !important;
+  color: #1e1e1e !important;
+}
+dialog,
+#notice,
+#context-menu,
+.icon-button,
+.file-row {
+  border-radius: 0;
+  box-shadow: none;
+}
+#password-dialog h2 {
+  font: inherit;
+  font-weight: 600;
+  margin: 0 0 20px;
+}
+#password-dialog label {
+  margin-bottom: 8px;
+}
+#password-confirm-row {
+  margin-top: 15px;
+}
+#password-hint {
+  color: #888;
+  font-size: 11px;
+}
+#password-error {
+  color: #cf9990;
+  font-size: 12px;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}

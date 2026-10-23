@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Single local editor window; file access is validated by Rust commands.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "core:window:allow-destroy"
+  ]
+}
