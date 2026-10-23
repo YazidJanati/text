@@ -1,7 +1,7 @@
 import { Vim, toggleVim, observeVim, vimEnabled } from "./vim";
 import "./style.css";
 import { invoke } from "@tauri-apps/api/core";
-import { createEditor, makeState } from "./editor";
+import { createEditor, makeState, setEditorFontSize } from "./editor";
 import { desktop, storage } from "./storage";
 import { icon } from "./icons";
 import type { DocumentFile, Workspace, Entry } from "./types";
@@ -768,9 +768,8 @@ let editorFontSize = 13;
 function zoomText(change: number) {
   if (document.querySelector("dialog[open]")) return;
   editorFontSize = change === 0 ? 13 : Math.max(9, Math.min(32, editorFontSize + change));
-  editor.dom.style.setProperty("--editor-font-size", `${editorFontSize}px`);
+  setEditorFontSize(editor, editorFontSize);
   remember("text-size", String(editorFontSize));
-  editor.requestMeasure();
 }
 const rememberedSize = Number(recalled("text-size"));
 if (Number.isInteger(rememberedSize) && rememberedSize >= 9 && rememberedSize <= 32)

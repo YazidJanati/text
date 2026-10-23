@@ -1,6 +1,6 @@
 import { vimCompartment, vimExtension } from "./vim";
 import { mathPreview } from "./math";
-import { EditorState, EditorSelection } from "@codemirror/state";
+import { Compartment, EditorState, EditorSelection } from "@codemirror/state";
 import {
   EditorView,
   Decoration,
@@ -26,6 +26,16 @@ import {
 import { syntaxTree, indentUnit } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { GFM } from "@lezer/markdown";
+const textSize = new Compartment();
+let fontSize = 13;
+const textSizeTheme = () => EditorView.theme({
+  "&": { "--editor-font-size": `${fontSize}px` },
+});
+export function setEditorFontSize(view: EditorView, size: number) {
+  fontSize = size;
+  // A theme update refreshes CodeMirror's cached font and cursor measurements.
+  view.dispatch({ effects: textSize.reconfigure(textSizeTheme()) });
+}
 class Bullet extends WidgetType {
   toDOM() {
     const el = document.createElement("span");
@@ -297,6 +307,7 @@ export function makeState(doc: string, onChange: () => void) {
       livePreview,
       mathPreview,
       theme,
+      textSize.of(textSizeTheme()),
       EditorView.lineWrapping,
       history(),
       indentUnit.of("  "),

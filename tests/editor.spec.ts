@@ -1063,3 +1063,43 @@ test("View text-size actions work in Vim and stay out of dialogs", async ({ page
   await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "13px");
   await expect(page.locator("#vim-mode")).toHaveText("[insert]");
 });
+
+test("Vim block cursor scales immediately with text zoom on an empty line", async ({ page }) => {
+  await native(page);
+  const cursor = page.locator(".cm-fat-cursor");
+  await expect(cursor).toHaveCount(1);
+  const before = await cursor.boundingBox();
+  expect(before).not.toBeNull();
+  for (let i = 0; i < 8; i++) await page.keyboard.press(`${mod}+=`);
+  await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "21px");
+  await expect(cursor).toHaveCSS("font-size", "21px");
+  await expect.poll(async () => (await cursor.boundingBox())!.height).toBeGreaterThan(before!.height * 1.4);
+  expect((await cursor.boundingBox())!.width).toBeGreaterThan(before!.width * 1.4);
+  await expect(page.locator("#vim-mode")).toHaveText("[normal]");
+  await expect(page.locator(".cm-content")).toHaveText("");
+  await page.keyboard.press(`${mod}+0`);
+  await expect(cursor).toHaveCSS("font-size", "13px");
+  await expect.poll(async () => (await cursor.boundingBox())!.height).toBeCloseTo(before!.height, 0);
+  await page.keyboard.press(`${mod}+=`);
+  await page.keyboard.press(`${mod}+n`);
+  await expect(page.locator("#document-name")).toHaveText("Untitled 2");
+  await expect(cursor).toHaveCSS("font-size", "14px");
+});
+
+test("insert cursor resizes without moving the caret or changing text", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "abc" });
+  await page.keyboard.type("i");
+  const cursor = page.locator(".cm-cursorLayer:not(.cm-vimCursorLayer) .cm-cursor").first();
+  await expect(cursor).toHaveCount(1);
+  const before = await cursor.boundingBox();
+  for (let i = 0; i < 8; i++) await page.keyboard.press(`${mod}+=`);
+  await expect.poll(async () => (await cursor.boundingBox())!.height).toBeGreaterThan(before!.height * 1.4);
+  await page.keyboard.type("X");
+  await expect(page.locator(".cm-content")).toHaveText("Xabc");
+  await expect(page.locator("#vim-mode")).toHaveText("[insert]");
+  await page.keyboard.press(`${mod}+Alt+v`);
+  await page.keyboard.press(`${mod}+0`);
+  await expect.poll(async () => (await cursor.boundingBox())!.height).toBeCloseTo(before!.height, 0);
+  await page.keyboard.type("Y");
+  await expect(page.locator(".cm-content")).toHaveText("XYabc");
+});
