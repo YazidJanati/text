@@ -13,7 +13,13 @@ export interface Workspace {
   path: string;
   name: string;
 }
+export interface EntryInfo extends Entry {
+  size: number;
+  created: number | null;
+  modified: number | null;
+}
 export interface Storage {
+  info(path: string): Promise<EntryInfo>;
   library(): Promise<Workspace>;
   listFolder(path: string): Promise<Entry[]>;
   readFile(path: string): Promise<DocumentFile>;

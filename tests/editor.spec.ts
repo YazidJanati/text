@@ -67,6 +67,16 @@ async function native(
                   Number(b.directory) - Number(a.directory) ||
                   a.name.localeCompare(b.name),
               );
+          if (command === "entry_info") {
+            if (!(args.path in w.testFiles)) throw "Missing item";
+            return {
+              path: args.path, name: args.path.split("/").at(-1),
+              directory: w.testFiles[args.path] === null,
+              protected: !!w.testProtected[args.path],
+              size: new TextEncoder().encode(w.testFiles[args.path] || "").length,
+              created: Date.UTC(2026, 8, 1, 10), modified: Date.UTC(2026, 9, 2, 11),
+            };
+          }
           if (command === "close_note") {
             w.unlocked = null;
             return;
@@ -200,6 +210,9 @@ async function native(
         },
       };
       w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+      w.fireTextSize = (change: number) => callbacks.get(listeners.get("text-size"))?.({
+        event: "text-size", payload: change,
+      });
       w.fireShortcuts = () => callbacks.get(listeners.get("show-shortcuts"))?.({
         event: "show-shortcuts", payload: null,
       });
@@ -953,4 +966,100 @@ test("inline math stays rendered on the following space in Vim normal mode", asy
   await page.keyboard.press("h");
   await expect(page.locator(".math-inline")).toHaveCount(0);
   await expect(page.locator(".cm-content")).toContainText("$x^2$");
+});
+
+
+async function getInfo(page: Page, path: string) {
+  await fileRow(page, path).click({ button: "right" });
+  await page.getByRole("button", { name: "Get Info", exact: true }).click();
+  return page.getByRole("dialog", { name: "Get Info", exact: true });
+}
+
+test("Get Info reports disk metadata for another note without switching the editor", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "keep editing", "/notes/other.md": "é" });
+  await fileRow(page, "/notes/Untitled.md").click();
+  await expect(page.locator("#document-name")).toHaveText("Untitled");
+  const dialog = await getInfo(page, "/notes/other.md");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#info-name")).toHaveText("other.md");
+  await expect(dialog.locator("dt", { hasText: "Location" }).locator("+ dd")).toHaveText("/notes/other.md");
+  await expect(dialog.locator("dt", { hasText: "Size" }).locator("+ dd")).toHaveText("2 bytes");
+  await expect(dialog.locator("dt", { hasText: "Created" }).locator("+ dd")).not.toHaveText("Unavailable");
+  await expect(dialog.locator("dt", { hasText: "Modified" }).locator("+ dd")).not.toHaveText("Unavailable");
+  await expect(dialog.locator("dt", { hasText: "Password" }).locator("+ dd")).toHaveText("None");
+  await expect(page.locator("#document-name")).toHaveText("Untitled");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(fileRow(page, "/notes/other.md")).toBeFocused();
+  await expect(page.locator(".cm-content")).toHaveText("keep editing");
+});
+
+test("Get Info inspects a locked note without asking for or remembering a password", async ({ page }) => {
+  await native(page);
+  await replace(page, "Secret content");
+  await protect(page);
+  await page.keyboard.press("Control+w");
+  const dialog = await getInfo(page, "/notes/Untitled.textlock");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("dt", { hasText: "Password" }).locator("+ dd")).toHaveText("Protected");
+  await expect(dialog).toContainText("Encrypted note");
+  await expect(dialog).not.toContainText("Secret content");
+  await expect(page.locator("#password-dialog")).toBeHidden();
+  await expect(page.locator("#editor")).toBeHidden();
+  await page.getByRole("button", { name: "Close info" }).click();
+  await fileRow(page, "/notes/Untitled.textlock").click();
+  await expect(page.locator("#password-dialog")).toBeVisible();
+});
+
+test("browser Get Info identifies preview storage and does not invent filesystem dates", async ({ page }) => {
+  await page.goto("/");
+  const dialog = await getInfo(page, "/notes/Untitled.md");
+  await expect(dialog).toContainText("Browser storage: /notes/Untitled.md");
+  await expect(dialog.locator("dt", { hasText: "Created" }).locator("+ dd")).toHaveText("Unavailable");
+  await expect(dialog.locator("dt", { hasText: "Modified" }).locator("+ dd")).toHaveText("Unavailable");
+});
+
+test("text zoom scales prose, headings, code and equations while leaving the app unchanged", async ({ page }) => {
+  await native(page);
+  const source = "# Heading\n\n$x^2$ \n\n```\ncode\n```\n\n";
+  await replace(page, source);
+  const sizes = () => page.evaluate(() => {
+    const font = (selector: string) => parseFloat(getComputedStyle(document.querySelector(selector)!).fontSize);
+    return { editor: font(".cm-scroller"), heading: font(".md-h1"), code: font(".md-code-line"), math: font(".katex"),
+      sidebar: font("#sidebar"), header: font("#document-name"), width: document.querySelector("#sidebar")!.getBoundingClientRect().width, viewport: innerWidth };
+  });
+  const before = await sizes();
+  await page.keyboard.press(`${mod}+=`);
+  const after = await sizes();
+  expect(after.editor).toBe(14);
+  for (const key of ["heading", "code", "math"] as const) expect(after[key] / before[key]).toBeCloseTo(14 / 13, 3);
+  for (const key of ["sidebar", "header", "width", "viewport"] as const) expect(after[key]).toBe(before[key]);
+  await expect(page.locator("#notice")).toBeHidden();
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe(source);
+  await page.reload();
+  await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "14px");
+  await page.keyboard.press(`${mod}+-`);
+  await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "13px");
+  await page.keyboard.press(`${mod}+=`);
+  await page.keyboard.press(`${mod}+0`);
+  await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "13px");
+});
+
+test("View text-size actions work in Vim and stay out of dialogs", async ({ page }) => {
+  await native(page);
+  await page.keyboard.type("i");
+  await page.evaluate(() => (window as any).fireTextSize(1));
+  await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "14px");
+  await expect(page.locator("#vim-mode")).toHaveText("[insert]");
+  await page.keyboard.press(`${mod}+=`);
+  await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "15px");
+  await page.keyboard.press("F1");
+  await page.evaluate(() => (window as any).fireTextSize(1));
+  await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "15px");
+  await expect(page.locator("#shortcuts-dialog")).toContainText("Text size");
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => (window as any).fireTextSize(0));
+  await expect(page.locator(".cm-scroller")).toHaveCSS("font-size", "13px");
+  await expect(page.locator("#vim-mode")).toHaveText("[insert]");
 });

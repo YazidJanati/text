@@ -23,6 +23,9 @@ const shortcuts = [
     ["Rename focused item", "Enter / F2"], ["Move to trash", "Delete"],
     ["Return to editor", "Esc"],
   ]),
+  shortcutGroup("Text size", [
+    ["Increase", mod + "+"], ["Decrease", mod + "−"], ["Reset", mod + "0"],
+  ]),
   shortcutGroup("Editing · Vim off", [
     ["Find", mod + "F"], ["Bold", mod + "Shift+B"],
     ["Italic", mod + "I"], ["Insert link", mod + "K"],
@@ -38,11 +41,12 @@ document.querySelector("#app")!.innerHTML = `
 <main><header>${tool("toggle-sidebar", "sidebar", "Toggle sidebar", mod + "B")}<button id="document-name" title="Rename (F2)"></button><span id="dirty" hidden aria-label="Unsaved changes"></span><span id="vim-mode" role="status" aria-label="Vim mode"></span><button id="vim-toggle" type="button"></button></header><div id="editor"></div></main>
 <div id="notice" role="alert" hidden><span></span><button aria-label="Dismiss">×</button></div>
 <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts">×</button></div><div class="shortcut-groups">${shortcuts}</div><p class="shortcut-commands"><code>:w</code> save · <code>:q</code> quit · <code>:wq</code> save &amp; quit<br><code>:new Name</code> new note · <code>:mkdir Name</code> new folder</p><p class="shortcut-footnote">Drag items onto a folder to move them; drop into empty sidebar space for the top level.<br>F1 opens this reference · Esc closes it.</p></dialog>
+<dialog id="info-dialog" aria-labelledby="info-title"><div class="shortcuts-heading"><h2 id="info-title">Get Info</h2><button id="close-info" class="icon-button" aria-label="Close info">×</button></div><p id="info-name"></p><dl id="info-details"></dl></dialog>
 <dialog id="name-dialog"><form><label id="name-label" for="name-input"></label><input id="name-input" autocomplete="off" maxlength="120" required><div class="dialog-actions"><button type="button" id="name-cancel">Cancel</button><button type="submit" id="name-submit">Create</button></div></form></dialog>
 <dialog id="unsaved"><form><p>Couldn’t save this note.</p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="discard">Discard</button><button value="export">Export copy</button></div></form></dialog>
 <dialog id="password-dialog"><form><h2 id="password-heading"></h2><label for="password-input">Password</label><input id="password-input" type="password" maxlength="1024" required><div id="password-confirm-row"><label for="password-confirm">Confirm password</label><input id="password-confirm" type="password" maxlength="1024" autocomplete="new-password"></div><p id="password-hint">No recovery if forgotten.</p><p id="password-error" role="alert" hidden></p><div class="dialog-actions"><button id="password-cancel" type="button">Cancel</button><button id="password-submit" type="submit"></button></div></form></dialog>
 <dialog id="export-warning"><form><p>Export an unencrypted Markdown copy?</p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="export">Export</button></div></form></dialog>
-<div id="context-menu" popover="auto"><button id="rename">Rename</button><button id="set-password">Set password</button><button id="remove-password">Remove password</button><button id="trash">Move to trash</button></div>`;
+<div id="context-menu" popover="auto"><button id="rename">Rename</button><button id="get-info">Get Info</button><button id="set-password">Set password</button><button id="remove-password">Remove password</button><button id="trash">Move to trash</button></div>`;
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 let workspace: Workspace | null = null,
@@ -576,6 +580,7 @@ async function addFolder(
       menu.style.left = `${Math.min(event.clientX, innerWidth - 150)}px`;
       menu.style.top = `${Math.min(event.clientY, innerHeight - 140)}px`;
       menu.showPopover();
+      menu.style.top = `${Math.max(8, Math.min(event.clientY, innerHeight - menu.offsetHeight - 8))}px`;
     };
     row.ondblclick = () =>
       void action(
@@ -727,6 +732,49 @@ document.addEventListener("drop", (event) => {
   draggedEntry = null;
   clearDropTarget();
 });
+let infoFocus: string | null = null;
+async function showInfo(entry: Entry) {
+  const info = await storage.info(entry.path);
+  const date = (value: number | null) => value === null ? "Unavailable" :
+    new Intl.DateTimeFormat(undefined, { dateStyle: "long", timeStyle: "medium" }).format(value);
+  const size = info.size < 1024 ? `${info.size} ${info.size === 1 ? "byte" : "bytes"}` :
+    `${(info.size / (info.size < 1024 * 1024 ? 1024 : 1024 * 1024)).toFixed(1)} ${info.size < 1024 * 1024 ? "KB" : "MB"} (${info.size.toLocaleString()} bytes)`;
+  const fields = [
+    ["Location", desktop ? info.path : "Browser storage: " + info.path],
+    ["Type", info.directory ? "Folder" : info.protected ? "Encrypted note" : "Markdown note"],
+    ["Created", date(info.created)], ["Modified", date(info.modified)],
+    ...(!info.directory ? [["Size", size], ["Password", info.protected ? "Protected" : "None"]] : []),
+  ];
+  $("info-name").textContent = info.name;
+  $("info-details").replaceChildren(...fields.flatMap(([label, value]) => {
+    const term = document.createElement("dt"), detail = document.createElement("dd");
+    term.textContent = label;
+    detail.textContent = value;
+    return [term, detail];
+  }));
+  infoFocus = entry.path;
+  $<HTMLDialogElement>("info-dialog").showModal();
+}
+$("get-info").onclick = () => {
+  $("context-menu").hidePopover();
+  if (context) {
+    const entry = context;
+    void action(() => showInfo(entry), () => {});
+  }
+};
+$("close-info").onclick = () => $<HTMLDialogElement>("info-dialog").close();
+$("info-dialog").addEventListener("close", () => focusEntry(infoFocus));
+let editorFontSize = 13;
+function zoomText(change: number) {
+  if (document.querySelector("dialog[open]")) return;
+  editorFontSize = change === 0 ? 13 : Math.max(9, Math.min(32, editorFontSize + change));
+  editor.dom.style.setProperty("--editor-font-size", `${editorFontSize}px`);
+  remember("text-size", String(editorFontSize));
+  editor.requestMeasure();
+}
+const rememberedSize = Number(recalled("text-size"));
+if (Number.isInteger(rememberedSize) && rememberedSize >= 9 && rememberedSize <= 32)
+  zoomText(rememberedSize - 13);
 let shortcutsFocus: HTMLElement | null = null;
 function showShortcuts() {
   if (document.querySelector("dialog[open]")) return;
@@ -840,6 +888,17 @@ document.addEventListener(
   "keydown",
   (event) => {
     if (event.isComposing) return;
+    if ((event.metaKey || event.ctrlKey) && !event.altKey) {
+      const zoom = event.key === "+" || event.key === "=" || event.code === "NumpadAdd" ? 1 :
+        event.key === "-" || event.code === "NumpadSubtract" ? -1 :
+        event.key === "0" || event.code === "Digit0" || event.code === "Numpad0" ? 0 : null;
+      if (zoom !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        zoomText(zoom);
+        return;
+      }
+    }
     if (event.key === "F1" && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault();
       event.stopPropagation();
@@ -930,6 +989,7 @@ if (desktop) {
         if (!document.querySelector("dialog[open]")) void action(closeCurrent);
       });
       await listen("show-shortcuts", showShortcuts);
+      await listen<number>("text-size", (event) => zoomText(event.payload));
     })
     .catch(notice);
   import("@tauri-apps/api/window")

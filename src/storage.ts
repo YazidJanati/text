@@ -3,6 +3,7 @@ import type { Storage, DocumentFile } from "./types";
 export const desktop = isTauri();
 const native: Storage = {
   library: () => invoke("library"),
+  info: (path) => invoke("entry_info", { path }),
   listFolder: (path) => invoke("list_folder", { path }),
   readFile: (path) => invoke("read_file", { path }),
   unlockFile: (path, password) => invoke("unlock_file", { path, password }),
@@ -55,6 +56,14 @@ function unique(parent: string, name: string, extension = "") {
   return path;
 }
 const browser: Storage = {
+  info: async (path) => {
+    if (!(path in data)) throw new Error("This item no longer exists.");
+    return {
+      path, name: path.split("/").at(-1)!, directory: data[path] === null,
+      protected: false, size: new TextEncoder().encode(data[path] || "").length,
+      created: null, modified: null,
+    };
+  },
   unlockFile: async () => {
     throw new Error("Password protection is available in the desktop app.");
   },

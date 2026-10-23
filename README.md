@@ -41,6 +41,10 @@ text opens to a blank note in its own library. It saves after 500 ms of inactivi
 
 Create notes and folders with the two sidebar controls or shortcuts. New items go into the selected folder; click empty sidebar space to select the library root. Click a folder to expand it. Drag notes or folders onto a folder to move them. Drop into empty sidebar space (or the text heading) to move them back to the library root. The destination highlights while dragging, and opens after a successful drop. Existing names are never overwritten; protected notes keep their encryption. Rename a focused sidebar item with Enter or F2. Arrow keys navigate the file tree; Left/Right collapse and expand folders, Delete moves an item to trash, and Escape returns to the editor. You can also rename through the document title, a double click, or the context menu. The context menu also moves a note or folder to the app's local trash, preserving its contents.
 
+Right-click a note or folder and choose **Get Info** for its full location, type, creation/modification dates, and (for notes) size and password status. These dates come from the current file’s filesystem metadata; unavailable timestamps are shown as unavailable. Info works for locked notes without opening their contents. The browser preview cannot provide filesystem dates.
+
+Use **View → Increase / Decrease / Reset Text Size**, or **⌘/Ctrl + +**, **−**, and **0**, to resize only the editor text. Headings, code, and math scale with it; the sidebar and controls keep their size. Text size is remembered between sessions.
+
 Vim is **on by default**. The header button explicitly shows `vim:on` or `vim:off`; click it to switch. The adjacent `[normal]` / `[insert]` / `[visual]` text only reports the editing mode. Press `i` to write, `Esc` for normal mode, `v` for visual mode, and `/` to search. Motions, operators, counts, registers, macros, and undo are supplied by the CodeMirror Vim adapter. It is an embedded Vim editing layer, not the Neovim runtime: there are no Vim plugins, shell commands, splits, or `.vimrc` loading.
 
 Supported app commands:

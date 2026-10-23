@@ -201,11 +201,11 @@ const theme = EditorView.theme(
       color: "#d4d4d4",
       backgroundColor: "transparent",
       height: "100%",
-      fontSize: "13px",
+      fontSize: "var(--editor-font-size, 13px)",
     },
     ".cm-scroller": {
       fontFamily: "var(--font-mono)",
-      fontSize: "13px",
+      fontSize: "var(--editor-font-size, 13px)",
       letterSpacing: "0",
       wordSpacing: "0",
       lineHeight: "1.6",

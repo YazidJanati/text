@@ -216,23 +216,23 @@ header {
   line-height: 1.5 !important;
 }
 .md-h1 {
-  font-size: 23px;
+  font-size: 1.76923077em;
   margin-top: 5px !important;
   margin-bottom: 8px !important;
 }
 .md-h2 {
-  font-size: 19px;
+  font-size: 1.46153846em;
   margin-top: 12px !important;
   margin-bottom: 4px !important;
 }
 .md-h3 {
-  font-size: 16px;
+  font-size: 1.23076923em;
   margin-top: 8px !important;
 }
 .md-h4,
 .md-h5,
 .md-h6 {
-  font-size: 15px;
+  font-size: 1.15384615em;
   margin-top: 5px !important;
 }
 .md-strong {
@@ -266,7 +266,7 @@ header {
 }
 .md-code-line {
   background: #181818;
-  font-size: 14px;
+  font-size: 1.07692308em;
   padding-left: 14px !important;
 }
 .md-bullet {
@@ -374,6 +374,30 @@ dialog p {
   padding: 7px 11px;
   border: 1px solid #444;
   border-radius: 3px;
+}
+#info-dialog {
+  width: 560px;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+#info-name {
+  margin: 0 0 20px;
+  overflow-wrap: anywhere;
+  color: #eee;
+}
+#info-details {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px 22px;
+  line-height: 1.6;
+}
+#info-details dt { color: #999; }
+#info-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
 }
 #shortcuts-dialog {
   width: 660px;

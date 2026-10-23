@@ -58,6 +58,45 @@ struct Entry {
     directory: bool,
     protected: bool,
 }
+#[derive(Serialize)]
+struct EntryInfo {
+    path: String,
+    name: String,
+    directory: bool,
+    protected: bool,
+    size: u64,
+    created: Option<f64>,
+    modified: Option<f64>,
+}
+fn timestamp(time: std::io::Result<std::time::SystemTime>) -> Option<f64> {
+    time.ok()
+        .map(|time| match time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => duration.as_secs_f64() * 1000.0,
+            Err(error) => -error.duration().as_secs_f64() * 1000.0,
+        })
+}
+fn inspect_entry(files: &Files, path: &str) -> AppResult<EntryInfo> {
+    let path = library_path(files, path)?;
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    Ok(EntryInfo {
+        name: path
+            .file_name()
+            .ok_or("Missing name.")?
+            .to_string_lossy()
+            .into_owned(),
+        path: display(&path),
+        directory: metadata.is_dir(),
+        protected: metadata.is_file() && protected(&path),
+        size: metadata.len(),
+        created: timestamp(metadata.created()),
+        modified: timestamp(metadata.modified()),
+    })
+}
+#[tauri::command]
+fn entry_info(path: String, state: State<'_, Mutex<Files>>) -> AppResult<EntryInfo> {
+    let files = state.lock().map_err(|error| error.to_string())?;
+    inspect_entry(&files, &path)
+}
 fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -424,6 +463,15 @@ pub fn run() {
             "shortcuts" => {
                 let _ = app.emit("show-shortcuts", ());
             }
+            "text-larger" => {
+                let _ = app.emit("text-size", 1);
+            }
+            "text-smaller" => {
+                let _ = app.emit("text-size", -1);
+            }
+            "text-reset" => {
+                let _ = app.emit("text-size", 0);
+            }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
@@ -440,6 +488,7 @@ pub fn run() {
             import_file,
             quit,
             list_folder,
+            entry_info,
             read_file,
             save_file,
             save_as
@@ -707,6 +756,51 @@ async fn import_file(
 mod library_tests {
     use super::*;
     #[test]
+    fn info_reads_filesystem_metadata_without_opening_the_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("Unicode.md");
+        fs::write(&path, "é").unwrap();
+        let files = Files {
+            root: Some(root.clone()),
+            ..Files::default()
+        };
+        let info = inspect_entry(&files, &display(&path)).unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(info.path, display(&path));
+        assert_eq!(info.name, "Unicode.md");
+        assert_eq!(info.size, 2);
+        assert_eq!(info.created, timestamp(metadata.created()));
+        assert_eq!(info.modified, timestamp(metadata.modified()));
+        assert!(!info.directory);
+        assert!(!info.protected);
+        assert!(files.opened.is_empty());
+        assert!(inspect_entry(&files, &display(&root)).unwrap().directory);
+        assert!(inspect_entry(&files, &display(&root.join("missing.md"))).is_err());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(inspect_entry(&files, &display(outside.path())).is_err());
+    }
+    #[test]
+    fn info_for_a_locked_note_does_not_unlock_or_change_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut files = Files {
+            root: Some(root.clone()),
+            ..Files::default()
+        };
+        let plain =
+            create_managed(&mut files, &display(&root), "Private", "Secret".into()).unwrap();
+        let secured =
+            protect_note(&mut files, Path::new(&plain.path), "password", "Secret").unwrap();
+        files.opened.clear();
+        let before = fs::read(&secured.path).unwrap();
+        let info = inspect_entry(&files, &secured.path).unwrap();
+        assert!(info.protected);
+        assert_eq!(info.size, before.len() as u64);
+        assert_eq!(fs::read(&secured.path).unwrap(), before);
+        assert!(files.opened.is_empty());
+    }
+    #[test]
     fn moving_an_open_note_keeps_saving_at_its_new_path() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -886,6 +980,28 @@ fn native_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
                 &[
                     &PredefinedMenuItem::minimize(app, None)?,
                     &PredefinedMenuItem::maximize(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(
+                app,
+                "View",
+                true,
+                &[
+                    &MenuItem::with_id(
+                        app,
+                        "text-larger",
+                        "Increase Text Size",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "text-smaller",
+                        "Decrease Text Size",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(app, "text-reset", "Reset Text Size", true, None::<&str>)?,
                 ],
             )?,
             &Submenu::with_items(
