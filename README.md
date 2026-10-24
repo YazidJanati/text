@@ -87,6 +87,17 @@ $$
 
 Math uses bundled KaTeX and fonts, works offline, and supports the [KaTeX syntax](https://katex.org/docs/supported). Tables, image references, and raw HTML remain editable Markdown source. Raw HTML is never executed, and remote images are not loaded. This is a focused editor, not a full Typora compatibility implementation.
 
+### Shared LaTeX notation (`def.tex`)
+
+To add your own LaTeX notation, create a UTF-8 text file named **`def.tex`** at the top level of the desktop notes library. On macOS this is `~/Library/Application Support/app.notes.editor/library/def.tex`. Or choose **Help → LaTeX notation…** to edit it inside the app: Save creates the file if needed, validates the definitions, and refreshes equations immediately. Cancel leaves it unchanged. The editor checks for external edits before saving.
+
+```latex
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+```
+
+These definitions apply to inline and display math in every note, including subfolders: `$\R$` and `$\norm{x}$`. They load at startup and reload when you return to the app after editing the file externally. Removing the file clears the definitions on the next reload. Invalid definitions show a notice and retain the last working definitions until fixed. The file is optional, limited to 64 KB, and hidden from the notes list. Use KaTeX-compatible commands such as `\newcommand`, `\renewcommand`, `\def`, and `\DeclareMathOperator`; full LaTeX packages, `\input`, and `\include` are not supported. Definitions are used only for rendering and are not inserted into saved/exported Markdown. Browser preview does not read this file.
+
 ## Passwords and closing notes
 
 Password protection is optional and available in the desktop app. Right-click a note and choose **Set password**, then enter and confirm the password. New notes have no password. After unlocking a protected note, its context menu offers **Remove password**.

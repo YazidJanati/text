@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::{
     collections::HashMap,
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -466,6 +466,9 @@ pub fn run() {
             "close-note" => {
                 let _ = app.emit("close-note", ());
             }
+            "latex-notation" => {
+                let _ = app.emit("edit-latex-notation", ());
+            }
             "shortcuts" => {
                 let _ = app.emit("show-shortcuts", ());
             }
@@ -486,6 +489,8 @@ pub fn run() {
             remove_password,
             close_note,
             library,
+            latex_definitions,
+            save_latex_definitions,
             create_note,
             create_folder,
             rename_entry,
@@ -618,6 +623,50 @@ fn library(state: State<'_, Mutex<Files>>) -> AppResult<Workspace> {
         name: "text".into(),
     })
 }
+// This command reads only the shared preamble, never an arbitrary user path.
+fn read_latex_definitions(root: &Path) -> AppResult<String> {
+    let path = root.join("def.tex");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(format!("Could not read def.tex: {error}")),
+    };
+    if !metadata.file_type().is_file() {
+        return Err("def.tex must be a regular file, not a folder or symbolic link.".into());
+    }
+    const LIMIT: u64 = 64 * 1024;
+    if metadata.len() > LIMIT {
+        return Err("def.tex exceeds the 64 KB limit.".into());
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path).map_err(|e| format!("Could not open def.tex: {e}"))?
+        .take(LIMIT + 1).read_to_end(&mut bytes)
+        .map_err(|e| format!("Could not read def.tex: {e}"))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err("def.tex exceeds the 64 KB limit.".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "def.tex must be saved as UTF-8 text.".into())
+}
+#[tauri::command]
+fn latex_definitions(state: State<'_, Mutex<Files>>) -> AppResult<String> {
+    let files = state.lock().map_err(|e| e.to_string())?;
+    read_latex_definitions(&root_path(&files)?)
+}
+fn write_latex_definitions(root: &Path, content: &str, expected: &str) -> AppResult<()> {
+    if content.len() > 64 * 1024 {
+        return Err("def.tex exceeds the 64 KB limit.".into());
+    }
+    if read_latex_definitions(root)? != expected {
+        return Err("def.tex changed elsewhere. Cancel and reopen LaTeX notation to load the latest file.".into());
+    }
+    let path = root.join("def.tex");
+    atomic_bytes(&path, content.as_bytes(), !path.exists())
+}
+#[tauri::command]
+fn save_latex_definitions(content: String, expected: String, state: State<'_, Mutex<Files>>) -> AppResult<()> {
+    let files = state.lock().map_err(|e| e.to_string())?;
+    write_latex_definitions(&root_path(&files)?, &content, &expected)
+}
 #[tauri::command]
 fn create_note(
     parent: String,
@@ -645,12 +694,15 @@ fn create_folder(
 #[tauri::command]
 fn rename_entry(path: String, name: String, state: State<'_, Mutex<Files>>) -> AppResult<String> {
     let mut files = state.lock().map_err(|e| e.to_string())?;
-    let path = library_path(&files, &path)?;
-    if path == root_path(&files)? {
+    rename_managed(&mut files, &path, &name)
+}
+fn rename_managed(files: &mut Files, source: &str, requested_name: &str) -> AppResult<String> {
+    let path = library_path(files, source)?;
+    if path == root_path(files)? {
         return Err("The library itself cannot be renamed.".into());
     }
     let is_directory = path.is_dir();
-    let mut name = valid_name(&name)?;
+    let mut name = valid_name(requested_name)?;
     if !is_directory {
         if protected(&path) {
             if !protected(Path::new(&name)) {
@@ -664,11 +716,41 @@ fn rename_entry(path: String, name: String, state: State<'_, Mutex<Files>>) -> A
     if target == path {
         return Ok(display(&path));
     }
-    if target.exists() {
-        return Err("That name already exists.".into());
+    let target_exists = match fs::symlink_metadata(&target) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.to_string()),
+    };
+    if target_exists {
+        // On case-insensitive filesystems the new spelling resolves to the source.
+        // Exact directory-entry names also distinguish separate files, symlinks and
+        // hard links on case-sensitive filesystems; none may be overwritten.
+        let parent = path.parent().ok_or("Missing parent folder.")?;
+        let exact_target = fs::read_dir(parent).map_err(|e| e.to_string())?
+            .map(|entry| entry.map(|entry| entry.file_name() == target.file_name().unwrap()))
+            .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+            .into_iter().any(|matches| matches);
+        if exact_target || target.canonicalize().map_err(|e| e.to_string())? != path {
+            return Err("That name already exists.".into());
+        }
+        // A two-step rename forces the requested casing to be stored on disk.
+        let staging = tempfile::Builder::new().prefix(".text-rename-")
+            .tempdir_in(parent).map_err(|e| e.to_string())?;
+        let staged = staging.path().join("entry");
+        fs::rename(&path, &staged).map_err(|e| e.to_string())?;
+        if let Err(error) = fs::rename(&staged, &target) {
+            if let Err(rollback) = fs::rename(&staged, &path) {
+                // Never let TempDir cleanup delete a note if restoration fails.
+                let recovery = staging.keep().join("entry");
+                remap_opened(files, &path, &recovery);
+                return Err(format!("Could not rename ({error}) or restore ({rollback}). Your item is preserved at {}", display(&recovery)));
+            }
+            return Err(error.to_string());
+        }
+    } else {
+        fs::rename(&path, &target).map_err(|e| e.to_string())?;
     }
-    fs::rename(&path, &target).map_err(|e| e.to_string())?;
-    remap_opened(&mut files, &path, &target);
+    remap_opened(files, &path, &target);
     Ok(display(&target))
 }
 fn remap_opened(files: &mut Files, path: &Path, target: &Path) {
@@ -1015,13 +1097,10 @@ fn native_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
                 app,
                 "Help",
                 true,
-                &[&MenuItem::with_id(
-                    app,
-                    "shortcuts",
-                    "Keyboard Shortcuts",
-                    true,
-                    Some("F1"),
-                )?],
+                &[
+                    &MenuItem::with_id(app, "shortcuts", "Keyboard Shortcuts", true, Some("F1"))?,
+                    &MenuItem::with_id(app, "latex-notation", "LaTeX notation…", true, None::<&str>)?,
+                ],
             )?,
         ],
     )
@@ -1126,5 +1205,117 @@ mod protection_lifecycle_tests {
         create_managed(&mut files, &root, "Other", String::new()).unwrap();
         assert!(!files.opened.contains_key(Path::new(&doc.path)));
         assert!(unprotect_note(&mut files, Path::new(&doc.path)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod latex_definition_tests {
+    use super::*;
+    #[test]
+    fn definitions_save_atomically_and_reject_conflicts_and_invalid_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("def.tex");
+        let content = r"\newcommand{\R}{\mathbb{R}}";
+        write_latex_definitions(dir.path(), content, "").unwrap();
+        assert_eq!(read_latex_definitions(dir.path()).unwrap(), content);
+        fs::write(&path, "external edit").unwrap();
+        assert!(write_latex_definitions(dir.path(), "replacement", content).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "external edit");
+        assert!(write_latex_definitions(dir.path(), &"x".repeat(65537), "external edit").is_err());
+        write_latex_definitions(dir.path(), "", "external edit").unwrap();
+        assert_eq!(read_latex_definitions(dir.path()).unwrap(), "");
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(write_latex_definitions(dir.path(), content, "").is_err());
+    }
+
+    #[test]
+    fn definitions_are_optional_utf8_and_size_limited() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("def.tex");
+        assert_eq!(read_latex_definitions(dir.path()).unwrap(), "");
+        let source = r"\newcommand{\R}{\mathbb{R}}";
+        fs::write(&path, source).unwrap();
+        assert_eq!(read_latex_definitions(dir.path()).unwrap(), source);
+        fs::write(&path, [0xff]).unwrap();
+        assert!(read_latex_definitions(dir.path()).unwrap_err().contains("UTF-8"));
+        fs::write(&path, vec![b'x'; 65537]).unwrap();
+        assert!(read_latex_definitions(dir.path()).unwrap_err().contains("64 KB"));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(read_latex_definitions(dir.path()).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn definitions_reject_symbolic_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("def.tex")).unwrap();
+        assert!(read_latex_definitions(dir.path()).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+    #[test]
+    fn case_only_note_rename_updates_disk_spelling_and_keeps_saving() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut files = Files { root: Some(root.clone()), ..Files::default() };
+        let note = create_managed(&mut files, &display(&root), "Thoughts", "before".into()).unwrap();
+        let renamed = rename_managed(&mut files, &note.path, "thoughts").unwrap();
+        assert_eq!(renamed, display(&root.join("thoughts.md")));
+        let names: Vec<_> = fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.contains(&std::ffi::OsString::from("thoughts.md")));
+        assert!(!names.contains(&std::ffi::OsString::from("Thoughts.md")));
+        save_checked(&mut files, Path::new(&renamed), "after".into(), note.content).unwrap();
+        assert_eq!(fs::read_to_string(&renamed).unwrap(), "after");
+        assert_eq!(rename_managed(&mut files, &renamed, "thoughts").unwrap(), renamed);
+        assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    }
+    #[test]
+    fn case_only_folder_rename_remaps_open_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let folder = root.join("Work");
+        fs::create_dir(&folder).unwrap();
+        let mut files = Files { root: Some(root.clone()), ..Files::default() };
+        let note = create_managed(&mut files, &display(&folder), "Note", "before".into()).unwrap();
+        let renamed = rename_managed(&mut files, &display(&folder), "WORK").unwrap();
+        let moved_note = Path::new(&renamed).join("Note.md");
+        save_checked(&mut files, &moved_note, "after".into(), note.content).unwrap();
+        assert_eq!(fs::read_to_string(moved_note).unwrap(), "after");
+        assert_eq!(fs::read_dir(&root).unwrap().next().unwrap().unwrap().file_name(), "WORK");
+        assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    }
+    #[test]
+    fn real_name_collisions_preserve_both_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut files = Files { root: Some(root.clone()), ..Files::default() };
+        let note = create_managed(&mut files, &display(&root), "First", "first".into()).unwrap();
+        fs::write(root.join("Other.md"), "other").unwrap();
+        assert!(rename_managed(&mut files, &note.path, "Other").is_err());
+        assert_eq!(fs::read_to_string(note.path).unwrap(), "first");
+        assert_eq!(fs::read_to_string(root.join("Other.md")).unwrap(), "other");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn existing_links_are_not_treated_as_a_case_only_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut files = Files { root: Some(root.clone()), ..Files::default() };
+        let note = create_managed(&mut files, &display(&root), "First", "first".into()).unwrap();
+        std::os::unix::fs::symlink(&note.path, root.join("Alias.md")).unwrap();
+        assert!(rename_managed(&mut files, &note.path, "Alias").is_err());
+        assert!(fs::symlink_metadata(root.join("Alias.md")).unwrap().file_type().is_symlink());
+        // These can coexist only on case-sensitive filesystems.
+        if fs::hard_link(&note.path, root.join("first.md")).is_ok() {
+            assert!(rename_managed(&mut files, &note.path, "first").is_err());
+            assert!(root.join("first.md").exists());
+        }
+        assert_eq!(fs::read_to_string(note.path).unwrap(), "first");
     }
 }

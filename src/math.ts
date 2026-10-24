@@ -1,4 +1,4 @@
-import { StateField, type EditorState } from "@codemirror/state";
+import { StateEffect, StateField, type EditorState } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -9,11 +9,34 @@ import { syntaxTree } from "@codemirror/language";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
+const definitionsChanged = StateEffect.define<void>();
+let definitions = "";
+const mathOptions = {
+  trust: false,
+  strict: "ignore" as const,
+  maxExpand: 1000,
+  maxSize: 20,
+};
+export function validateMathDefinitions(source: string) {
+  if (new TextEncoder().encode(source).length > 64 * 1024)
+    throw new Error("def.tex exceeds the 64 KB limit.");
+  katex.renderToString(source.replace(/^\uFEFF/, ""), { ...mathOptions, throwOnError: true });
+}
+export function setMathDefinitions(view: EditorView, source: string) {
+  source = source.replace(/^\uFEFF/, "");
+  if (source === definitions) return;
+  // Validate the entire preamble before replacing the last working definitions.
+  validateMathDefinitions(source);
+  definitions = source;
+  view.dispatch({ effects: definitionsChanged.of() });
+}
+
 class MathWidget extends WidgetType {
   constructor(
     readonly source: string,
     readonly display: boolean,
     readonly from: number,
+    readonly preamble: string,
   ) {
     super();
   }
@@ -21,7 +44,8 @@ class MathWidget extends WidgetType {
     return (
       this.source === other.source &&
       this.display === other.display &&
-      this.from === other.from
+      this.from === other.from &&
+      this.preamble === other.preamble
     );
   }
   toDOM(view: EditorView) {
@@ -29,13 +53,10 @@ class MathWidget extends WidgetType {
     el.className = this.display ? "math-block" : "math-inline";
     el.setAttribute("aria-label", this.source);
     el.title = this.source;
-    katex.render(this.source, el, {
+    katex.render(this.preamble + "\n" + this.source, el, {
+      ...mathOptions,
       displayMode: this.display,
       throwOnError: false,
-      trust: false,
-      strict: "ignore",
-      maxExpand: 1000,
-      maxSize: 20,
       output: "htmlAndMathml",
     });
     el.addEventListener("mousedown", (event) => {
@@ -120,7 +141,7 @@ function decorations(state: EditorState, ranges: MathRange[]): DecorationSet {
       .map((math) =>
         Decoration.replace({
           block: math.display,
-          widget: new MathWidget(math.source, math.display, math.from),
+          widget: new MathWidget(math.source, math.display, math.from, definitions),
         }).range(math.from, math.to),
       ),
     true,
@@ -138,7 +159,8 @@ export const mathPreview = StateField.define<{
     const changed =
       transaction.docChanged ||
       syntaxTree(transaction.startState) !== syntaxTree(transaction.state);
-    if (!changed && !transaction.selection) return value;
+    if (!changed && !transaction.selection &&
+        !transaction.effects.some((effect) => effect.is(definitionsChanged))) return value;
     const ranges = changed ? mathRanges(transaction.state) : value.ranges;
     return { ranges, decorations: decorations(transaction.state, ranges) };
   },

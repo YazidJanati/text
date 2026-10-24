@@ -49,12 +49,21 @@ async function native(
             return args.handler;
           }
           if (command === "library") return { path: "/notes", name: "notes" };
+          if (command === "latex_definitions") return w.testFiles["/notes/def.tex"] || "";
+          if (command === "save_latex_definitions") {
+            if ((w.testFiles["/notes/def.tex"] || "") !== args.expected)
+              throw "def.tex changed elsewhere. Cancel and reopen LaTeX notation to load the latest file.";
+            w.testFiles["/notes/def.tex"] = args.content;
+            persist();
+            return;
+          }
           if (command === "list_folder")
             return Object.keys(w.testFiles)
               .filter(
                 (p) =>
                   p.startsWith(args.path + "/") &&
-                  !p.slice(args.path.length + 1).includes("/"),
+                  !p.slice(args.path.length + 1).includes("/") &&
+                  (w.testFiles[p] === null || /\.(md|markdown|textlock)$/i.test(p)),
               )
               .map((p) => ({
                 path: p,
@@ -212,6 +221,9 @@ async function native(
       w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
       w.fireTextSize = (change: number) => callbacks.get(listeners.get("text-size"))?.({
         event: "text-size", payload: change,
+      });
+      w.fireLatexNotation = () => callbacks.get(listeners.get("edit-latex-notation"))?.({
+        event: "edit-latex-notation", payload: null,
       });
       w.fireShortcuts = () => callbacks.get(listeners.get("show-shortcuts"))?.({
         event: "show-shortcuts", payload: null,
@@ -1168,4 +1180,131 @@ test("update does not install if saving the current note fails", async ({ page }
 test("browser preview hides desktop updates", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#check-updates")).toBeHidden();
+});
+
+
+test("def.tex provides shared inline, display and argument macros across notes", async ({ page }) => {
+  const preamble = String.raw`% Shared notation
+\newcommand{\custom}{A}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}`;
+  const content = "Inline $\\custom$ and $\\norm{x}$.\n\n$$\n\\custom\n$$\n\nEnd";
+  await native(page, {
+    "/notes/First.md": content,
+    "/notes/Other.md": content,
+    "/notes/def.tex": preamble,
+  });
+  await expect(page.locator(".math-inline .katex")).toHaveCount(2);
+  await expect(page.locator(".math-block .katex")).toHaveCount(1);
+  await expect(page.locator(".katex-error")).toHaveCount(0);
+  await expect(page.locator(".math-inline .katex-html").first()).toHaveText("A");
+  await expect(page.locator("#files")).not.toContainText("def.tex");
+  await page.getByRole("button", { name: "Other", exact: true }).click();
+  await expect(page.locator(".math-inline .katex-html").first()).toHaveText("A");
+  expect(await page.evaluate(() => (window as any).testFiles["/notes/Other.md"])).toBe(content);
+  await page.keyboard.press("F1");
+  await expect(page.locator("#shortcuts-dialog")).not.toContainText("def.tex");
+});
+
+test("def.tex reloads on focus, keeps valid definitions on error and clears on removal", async ({ page }) => {
+  await native(page, {
+    "/notes/First.md": "Inline $\\custom$ and ordinary $x^2$.\n\nEnd",
+    "/notes/def.tex": String.raw`\def\custom{A}`,
+  });
+  const rendered = page.locator(".math-inline .katex-html").first();
+  await expect(rendered).toHaveText("A");
+  await page.evaluate(() => {
+    (window as any).testFiles["/notes/def.tex"] = String.raw`\def\custom{B}`;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(rendered).toHaveText("B");
+  await page.evaluate(() => {
+    (window as any).testFiles["/notes/def.tex"] = String.raw`\newcommand{\broken}{`;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.locator("#notice")).toContainText("Couldn’t load def.tex");
+  await expect(rendered).toHaveText("B");
+  await page.evaluate(() => {
+    delete (window as any).testFiles["/notes/def.tex"];
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(rendered).toHaveText(String.raw`\custom`);
+  await expect(page.locator(".math-inline .katex-html").nth(1)).toContainText("x");
+  await expect(page.locator("#notice")).toBeHidden();
+});
+
+test("invalid initial def.tex does not prevent ordinary math or opening notes", async ({ page }) => {
+  await native(page, {
+    "/notes/First.md": "Ordinary $x^2$.\n\nEnd",
+    "/notes/def.tex": String.raw`\usepackage{amsmath}`,
+  });
+  await expect(page.locator("#notice")).toContainText("Couldn’t load def.tex");
+  await expect(page.locator(".math-inline .katex")).toHaveCount(1);
+  await expect(page.locator(".katex-error")).toHaveCount(0);
+});
+
+
+async function openLatexNotation(page: Page) {
+  await page.evaluate(() => (window as any).fireLatexNotation());
+  await expect(page.locator("#latex-notation-source")).toBeEnabled();
+}
+
+test("LaTeX notation menu creates def.tex and refreshes notes immediately", async ({ page }) => {
+  const note = "Use $\\custom$ here.\n\nEnd";
+  await native(page, { "/notes/First.md": note });
+  await openLatexNotation(page);
+  const source = page.getByRole("textbox", { name: "Definitions", exact: true });
+  await expect(source).toHaveValue("");
+  await expect(source).toHaveAttribute("placeholder", /newcommand/);
+  const definitions = String.raw`\newcommand{\custom}{A}`;
+  await source.fill(definitions);
+  await source.press(`${mod}+s`);
+  await expect(page.locator("#latex-notation-dialog")).not.toBeVisible();
+  await expect(page.locator(".math-inline .katex-html")).toHaveText("A");
+  expect(await page.evaluate(() => (window as any).testFiles["/notes/def.tex"])).toBe(definitions);
+  expect(await page.evaluate(() => (window as any).testFiles["/notes/First.md"])).toBe(note);
+  await openLatexNotation(page);
+  await expect(source).toHaveValue(definitions);
+  await source.fill("");
+  await page.locator("#latex-notation-save").click();
+  await expect(page.locator(".math-inline .katex-html")).toHaveText(String.raw`\custom`);
+});
+
+test("LaTeX notation editor rejects invalid definitions and Cancel creates no file", async ({ page }) => {
+  await native(page);
+  await openLatexNotation(page);
+  await page.locator("#latex-notation-source").fill(String.raw`\newcommand{\broken}{`);
+  await page.locator("#latex-notation-save").click();
+  await expect(page.locator("#latex-notation-error")).toBeVisible();
+  expect(await page.evaluate(() => (window as any).calls.some((c: any) => c.command === "save_latex_definitions"))).toBe(false);
+  await page.locator("#latex-notation-cancel").click();
+  expect(await page.evaluate(() => (window as any).testFiles["/notes/def.tex"])).toBeUndefined();
+  await openLatexNotation(page);
+  await expect(page.locator("#latex-notation-source")).toHaveValue("");
+});
+
+test("LaTeX notation editor preserves an externally changed def.tex", async ({ page }) => {
+  await native(page, {
+    "/notes/First.md": "Ordinary $x^2$.\n\nEnd",
+    "/notes/def.tex": String.raw`\def\custom{A}`,
+  });
+  await openLatexNotation(page);
+  await page.locator("#latex-notation-source").fill(String.raw`\def\custom{B}`);
+  await page.evaluate(() => { (window as any).testFiles["/notes/def.tex"] = String.raw`\def\custom{C}`; });
+  await page.locator("#latex-notation-save").click();
+  await expect(page.locator("#latex-notation-error")).toContainText("changed elsewhere");
+  expect(await page.evaluate(() => (window as any).testFiles["/notes/def.tex"])).toBe(String.raw`\def\custom{C}`);
+  await page.locator("#latex-notation-cancel").click();
+  await openLatexNotation(page);
+  await expect(page.locator("#latex-notation-source")).toHaveValue(String.raw`\def\custom{C}`);
+});
+
+
+test("F1 Help opens the LaTeX notation editor directly", async ({ page }) => {
+  await native(page);
+  await page.keyboard.press("F1");
+  await expect(page.locator("#shortcuts-dialog")).toBeVisible();
+  await page.getByRole("button", { name: "LaTeX notation…", exact: true }).click();
+  await expect(page.locator("#shortcuts-dialog")).not.toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Definitions", exact: true })).toBeEnabled();
+  await expect(page.locator("#latex-notation-dialog")).toBeVisible();
 });

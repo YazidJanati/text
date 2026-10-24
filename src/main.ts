@@ -1,3 +1,5 @@
+import { setupLatexNotation } from "./latex-notation";
+import { setMathDefinitions } from "./math";
 import { setupUpdates } from "./updates";
 import { Vim, toggleVim, observeVim, vimEnabled } from "./vim";
 import "./style.css";
@@ -41,7 +43,7 @@ document.querySelector("#app")!.innerHTML = `
 <aside id="sidebar" aria-label="Notes"><div class="sidebar-heading"><span>text</span><div>${tool("new-folder", "folderPlus", "New folder", mod + "⇧N")}${tool("new-note", "plus", "New note", mod + "N")}</div></div><nav id="files" aria-label="Files"></nav><button id="check-updates" type="button" hidden>Updates</button></aside>
 <main><header>${tool("toggle-sidebar", "sidebar", "Toggle sidebar", mod + "B")}<button id="document-name" title="Rename (F2)"></button><span id="dirty" hidden aria-label="Unsaved changes"></span><span id="vim-mode" role="status" aria-label="Vim mode"></span><button id="vim-toggle" type="button"></button></header><div id="editor"></div></main>
 <div id="notice" role="alert" hidden><span></span><button aria-label="Dismiss">×</button></div>
-<dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts">×</button></div><div class="shortcut-groups">${shortcuts}</div><p class="shortcut-commands"><code>:w</code> save · <code>:q</code> quit · <code>:wq</code> save &amp; quit<br><code>:new Name</code> new note · <code>:mkdir Name</code> new folder</p><p class="shortcut-footnote">Drag items onto a folder to move them; drop into empty sidebar space for the top level.<br>F1 opens this reference · Esc closes it.</p></dialog>
+<dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="open-latex-notation" type="button" hidden>LaTeX notation…</button><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts">×</button></div><div class="shortcut-groups">${shortcuts}</div><p class="shortcut-commands"><code>:w</code> save · <code>:q</code> quit · <code>:wq</code> save &amp; quit<br><code>:new Name</code> new note · <code>:mkdir Name</code> new folder</p><p class="shortcut-footnote">Drag items onto a folder to move them; drop into empty sidebar space for the top level.<br>F1 opens this reference · Esc closes it.</p></dialog>
 <dialog id="info-dialog" aria-labelledby="info-title"><div class="shortcuts-heading"><h2 id="info-title">Get Info</h2><button id="close-info" class="icon-button" aria-label="Close info">×</button></div><p id="info-name"></p><dl id="info-details"></dl></dialog>
 <dialog id="name-dialog"><form><label id="name-label" for="name-input"></label><input id="name-input" autocomplete="off" maxlength="120" required><div class="dialog-actions"><button type="button" id="name-cancel">Cancel</button><button type="submit" id="name-submit">Create</button></div></form></dialog>
 <dialog id="unsaved"><form><p>Couldn’t save this note.</p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="discard">Discard</button><button value="export">Export copy</button></div></form></dialog>
@@ -68,6 +70,16 @@ const treeEntries = new Map<string, Entry>();
 let treeFocusedPath: string | null = null;
 let draggedEntry: Entry | null = null;
 const editor = createEditor($("editor"), "", changed);
+const showLatexNotation = setupLatexNotation({
+  storage,
+  apply: applyMathDefinitions,
+  focusEditor: () => editor.focus(),
+});
+$("open-latex-notation").hidden = !desktop;
+$("open-latex-notation").onclick = () => {
+  $<HTMLDialogElement>("shortcuts-dialog").close();
+  void showLatexNotation();
+};
 void document.fonts.ready.then(() => editor.requestMeasure());
 function text() {
   return editor.state.doc.toString();
@@ -974,6 +986,27 @@ window.addEventListener("beforeunload", (event) => {
     event.returnValue = "";
   }
 });
+let definitionsLoading = false;
+let definitionsError: string | null = null;
+function applyMathDefinitions(source: string) {
+  setMathDefinitions(editor, source);
+  if (definitionsError && $("notice").querySelector("span")!.textContent === definitionsError)
+    $("notice").hidden = true;
+  definitionsError = null;
+}
+async function refreshMathDefinitions() {
+  if (!desktop || definitionsLoading) return;
+  definitionsLoading = true;
+  try {
+    applyMathDefinitions((await storage.latexDefinitions()) || "");
+  } catch (error) {
+    definitionsError = `Couldn’t load def.tex. Previous working definitions are unchanged. ${String(error)}`;
+    notice(definitionsError);
+  } finally {
+    definitionsLoading = false;
+  }
+}
+window.addEventListener("focus", () => { void refreshMathDefinitions(); });
 window.addEventListener("blur", () => {
   if (ready) void flush();
 });
@@ -989,6 +1022,7 @@ if (desktop) {
         if (!document.querySelector("dialog[open]")) void action(closeCurrent);
       });
       await listen("show-shortcuts", showShortcuts);
+      await listen("edit-latex-notation", () => { if (!busy) void showLatexNotation(); });
       await listen<number>("text-size", (event) => zoomText(event.payload));
     })
     .catch(notice);
@@ -1056,6 +1090,6 @@ void action(async () => {
   }
   ready = true;
   await renderFiles();
-});
+}).then(refreshMathDefinitions);
 
 setupUpdates({ desktop, button: $<HTMLButtonElement>("check-updates"), run: (task) => action(task), save: flush });

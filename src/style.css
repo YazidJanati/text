@@ -565,3 +565,19 @@ button:disabled {
 }
 #check-updates:hover { color: #ddd; }
 #update-notes { white-space: pre-wrap; max-height: 35vh; overflow: auto; font: inherit; }
+
+
+#latex-notation-dialog { width: 640px; max-height: calc(100dvh - 40px); overflow: auto; }
+#latex-notation-title { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
+#latex-notation-source {
+  display: block; width: 100%; min-height: 220px; max-height: 45dvh;
+  resize: vertical; padding: 12px; border: 1px solid #444;
+  background: #181818; color: inherit; font: inherit; line-height: 1.6;
+  tab-size: 2;
+}
+#latex-notation-source:focus-visible { outline: 1px solid #888; outline-offset: -1px; }
+#latex-notation-hint { color: #999; font-size: 11px; }
+#latex-notation-error { color: #e1a09b; overflow-wrap: anywhere; }
+
+#open-latex-notation { margin-left: auto; margin-right: 12px; padding: 6px 8px; font-size: 11px; color: #aaa; }
+#open-latex-notation:hover { color: #ddd; }

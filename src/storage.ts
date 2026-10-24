@@ -3,6 +3,8 @@ import type { Storage, DocumentFile } from "./types";
 export const desktop = isTauri();
 const native: Storage = {
   library: () => invoke("library"),
+  latexDefinitions: () => invoke("latex_definitions"),
+  saveLatexDefinitions: (content, expected) => invoke("save_latex_definitions", { content, expected }),
   info: (path) => invoke("entry_info", { path }),
   listFolder: (path) => invoke("list_folder", { path }),
   readFile: (path) => invoke("read_file", { path }),
@@ -56,6 +58,8 @@ function unique(parent: string, name: string, extension = "") {
   return path;
 }
 const browser: Storage = {
+  latexDefinitions: async () => "",
+  saveLatexDefinitions: async () => { throw new Error("LaTeX notation settings are available in the desktop app."); },
   info: async (path) => {
     if (!(path in data)) throw new Error("This item no longer exists.");
     return {

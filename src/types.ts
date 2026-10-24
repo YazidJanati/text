@@ -21,6 +21,8 @@ export interface EntryInfo extends Entry {
 export interface Storage {
   info(path: string): Promise<EntryInfo>;
   library(): Promise<Workspace>;
+  latexDefinitions(): Promise<string>;
+  saveLatexDefinitions(content: string, expected: string): Promise<void>;
   listFolder(path: string): Promise<Entry[]>;
   readFile(path: string): Promise<DocumentFile>;
   unlockFile(path: string, password: string): Promise<DocumentFile>;
