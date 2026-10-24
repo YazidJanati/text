@@ -394,7 +394,7 @@ test("creates folders and notes inside them; renaming keeps note contents", asyn
   await page
     .getByRole("textbox", { name: "Rename", exact: true })
     .fill("Mechanics");
-  await page.getByRole("button", { name: "Rename", exact: true }).click();
+  await page.keyboard.press("Enter");
   await expect(page.locator("#document-name")).toHaveText("Mechanics");
   expect(await disk(page, "/notes/physics/Mechanics.md")).toBe("A nested note");
   await page.reload();
@@ -642,6 +642,8 @@ test("Enter renames a focused sidebar note, commits with Enter, and Escape retur
   await row.click();
   await expect(row).toBeFocused();
   await page.keyboard.press("Enter");
+  await expect(page.locator("#name-dialog")).toBeHidden();
+  await expect(page.locator("#files .rename-input")).toBeVisible();
   await page
     .getByRole("textbox", { name: "Rename", exact: true })
     .fill("Renamed");
@@ -1010,7 +1012,7 @@ test("F1 opens the shortcut reference and Escape restores editing without changi
   await expect(page.locator(".cm-content")).toHaveText("Keep this writing");
 });
 
-test("native Help menu opens shortcuts and leaves a rename dialog alone", async ({ page }) => {
+test("native Help menu opens shortcuts and leaves inline renaming alone", async ({ page }) => {
   await native(page);
   const row = fileRow(page, "/notes/Untitled.md");
   await row.focus();
@@ -1019,11 +1021,11 @@ test("native Help menu opens shortcuts and leaves a rename dialog alone", async 
   await page.getByRole("button", { name: "Close shortcuts" }).click();
   await expect(row).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page.locator("#name-dialog")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Rename", exact: true })).toBeVisible();
   await page.keyboard.press("F1");
   await page.evaluate(() => (window as any).fireShortcuts());
   await expect(page.locator("#shortcuts-dialog")).toBeHidden();
-  await expect(page.locator("#name-dialog")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Rename", exact: true })).toBeVisible();
 });
 
 
@@ -1404,8 +1406,8 @@ async function privateNote(page: Page) {
   await page.locator("#new-note").click();
   await replace(page, "Secret content");
   await page.locator("#document-name").click();
-  await page.locator("#name-input").fill("Secret title");
-  await page.locator("#name-submit").click();
+  await page.getByRole("textbox", { name: "Rename", exact: true }).fill("Secret title");
+  await page.keyboard.press("Enter");
   await expect(page.locator("#document-name")).toHaveText("Secret title");
 }
 test("Private is permanent, requires a password and creates encrypted notes", async ({ page }) => {
@@ -1474,7 +1476,7 @@ test("private lock retains failed-save edits behind the folder password", async 
   await page.keyboard.press(`${mod}+s`);
   expect(await page.evaluate(() => (window as any).testProtected["/notes/.private/Secret title.textlock"].content)).toBe("Unsaved private draft");
 });
-test("a rename dialog cannot keep Private unlocked after switching apps", async ({ page }) => {
+test("inline renaming cannot keep Private unlocked after switching apps", async ({ page }) => {
   await privateNote(page);
   await page.locator("#document-name").click();
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
@@ -1617,4 +1619,71 @@ test("Move to Private also works for a note that is not currently open", async (
   expect(await disk(page, "/notes/Other.md")).toBeUndefined();
   expect(await disk(page, "/notes/.private/Other.textlock")).toBe("encrypted");
   expect(await page.evaluate(() => (window as any).privateUnlocked)).toBe(true);
+});
+
+
+test("Escape cancels inline renaming without changing the note", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "Keep this text" });
+  await fileRow(page, "/notes/Untitled.md").click();
+  await page.keyboard.press("Enter");
+  await page.getByRole("textbox", { name: "Rename", exact: true }).fill("Do not save");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".rename-input")).toHaveCount(0);
+  await expect(fileRow(page, "/notes/Untitled.md")).toBeFocused();
+  await expect(page.locator("#document-name")).toHaveText("Untitled");
+  expect(await disk(page)).toBe("Keep this text");
+  expect(await disk(page, "/notes/Do not save.md")).toBeUndefined();
+});
+test("clicking another note commits the inline name and opens the clicked note", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "First", "/notes/Other.md": "Second" });
+  await fileRow(page, "/notes/Untitled.md").click();
+  await page.keyboard.press("Enter");
+  await page.getByRole("textbox", { name: "Rename", exact: true }).fill("Renamed");
+  await fileRow(page, "/notes/Other.md").click();
+  await expect(page.locator("#document-name")).toHaveText("Other");
+  await expect(page.locator(".cm-content")).toHaveText("Second");
+  expect(await disk(page, "/notes/Renamed.md")).toBe("First");
+  await expect(page.locator(".rename-input")).toHaveCount(0);
+});
+test("a name collision keeps the inline name editable and preserves both files", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "First", "/notes/Other.md": "Second" });
+  await fileRow(page, "/notes/Untitled.md").click();
+  await page.keyboard.press("Enter");
+  const input = page.getByRole("textbox", { name: "Rename", exact: true });
+  await input.fill("Other");
+  await input.press("Enter");
+  await expect(input).toBeFocused();
+  await expect(input).toHaveAttribute("aria-invalid", "true");
+  expect(await disk(page)).toBe("First");
+  expect(await disk(page, "/notes/Other.md")).toBe("Second");
+  await input.fill("Unique");
+  await input.press("Enter");
+  await expect(page.locator("#document-name")).toHaveText("Unique");
+  expect(await disk(page, "/notes/Unique.md")).toBe("First");
+});
+test("a nested note and its parent never both receive a selection highlight", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "", "/notes/work": null, "/notes/work/Inside.md": "Nested" });
+  const folder = fileRow(page, "/notes/work");
+  await folder.click();
+  const note = fileRow(page, "/notes/work/Inside.md");
+  await note.click();
+  await expect(note).toHaveClass(/selected/);
+  await expect(folder).not.toHaveClass(/selected/);
+  await expect(page.locator("button.file-row.selected")).toHaveCount(1);
+  await folder.click();
+  await expect(folder).toHaveClass(/selected/);
+  await expect(page.locator("button.file-row.selected")).toHaveCount(1);
+  await expect(page.locator(".cm-content")).toHaveText("Nested");
+});
+test("renaming from the title reveals a hidden sidebar and edits the name there", async ({ page }) => {
+  await native(page);
+  await page.locator("#toggle-sidebar").click();
+  await page.locator("#document-name").click();
+  await expect(page.locator("#sidebar")).toBeVisible();
+  await expect(page.locator("#name-dialog")).toBeHidden();
+  const input = page.locator("#files .rename-input");
+  await expect(input).toBeFocused();
+  await input.fill("From title");
+  await input.press("Enter");
+  await expect(page.locator("#document-name")).toHaveText("From title");
 });

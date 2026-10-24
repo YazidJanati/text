@@ -592,3 +592,18 @@ button:disabled {
 .private-concealed [data-private="true"] { visibility: hidden !important; }
 #private-folder { margin-top: 8px; }
 #private-folder .chevron svg { width: 13px; height: 13px; transform: none; }
+
+.rename-row { cursor: text; }
+.rename-input {
+  min-width: 0;
+  width: 100%;
+  padding: 1px 3px;
+  border: 1px solid #6685a3;
+  border-radius: 2px;
+  background: #1e1e1e;
+  color: #ddd;
+  outline: none;
+  user-select: text;
+}
+.rename-input:focus-visible { outline: none; }
+.rename-input[aria-invalid="true"] { border-color: #d77; }

@@ -54,7 +54,8 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 let workspace: Workspace | null = null,
   path: string | null = null,
-  selectedFolder: string | null = null;
+  selectedFolder: string | null = null,
+  selectedEntry: string | null = null;
 let savedContent = "",
   diskContent = "",
   eol = "\n",
@@ -76,6 +77,8 @@ let privateDraft: { path: string; content: string; expected: string; saved: stri
 let privateLockPromise: Promise<void> | null = null;
 let actionDone: Promise<void> | null = null;
 let cancelPasswordDialog: (() => void) | null = null;
+let inlineRename: { commit: () => void; cancel: () => void } | null = null;
+let queuedInlineAction: { task: () => Promise<void>; after?: () => void; entry?: Entry } | null = null;
 const isPrivate = (candidate: string | null) => !!privatePath && within(candidate, privatePath);
 const editor = createEditor($("editor"), "", changed);
 const showLatexNotation = setupLatexNotation({
@@ -133,9 +136,9 @@ function updateStatus() {
         getCurrentWindow().setTitle(document.title),
       )
       .catch(() => {});
-  document.querySelectorAll<HTMLButtonElement>(".file-row").forEach((row) => {
+  document.querySelectorAll<HTMLButtonElement>("button.file-row").forEach((row) => {
     const selected =
-      row.dataset.path === path || row.dataset.path === selectedFolder;
+      !row.hidden && row.dataset.path === selectedEntry;
     row.classList.toggle("selected", selected);
     if (row.dataset.path === path) row.setAttribute("aria-current", "page");
     else row.removeAttribute("aria-current");
@@ -155,6 +158,7 @@ async function setDocument(file: DocumentFile) {
   clearTimeout(saveTimer);
   $("notice").hidden = true;
   path = file.path;
+  selectedEntry = file.path;
   currentProtected = !!file.protected;
   $("editor").hidden = false;
   editor.dom.hidden = false;
@@ -348,6 +352,7 @@ async function readDocument(target: string): Promise<DocumentFile | null> {
 function clearDocument() {
   clearTimeout(saveTimer);
   if (currentProtected) Vim.resetVimGlobalState_();
+  if (selectedEntry === path) selectedEntry = null;
   path = null;
   currentProtected = false;
   savedContent = diskContent = "";
@@ -446,7 +451,14 @@ async function canLeave() {
   return choice === "discard";
 }
 async function action(task: () => Promise<void>, after?: () => void) {
-  if (busy || privateLockPromise) return;
+  if (privateLockPromise) return;
+  if (busy) {
+    if (inlineRename) {
+      queuedInlineAction = { task, after };
+      inlineRename.commit();
+    }
+    return;
+  }
   busy = true;
   let complete!: () => void;
   actionDone = new Promise<void>((resolve) => { complete = resolve; });
@@ -463,6 +475,9 @@ async function action(task: () => Promise<void>, after?: () => void) {
     else focusEntry(treeFocusedPath);
     actionDone = null;
     complete();
+    const queued = queuedInlineAction;
+    queuedInlineAction = null;
+    if (queued && !privateConcealed) void action(queued.task, queued.after);
   }
 }
 function parent() {
@@ -481,7 +496,7 @@ async function newFolder() {
   const created = await storage.createFolder(parent(), name);
   expanded.add(parent());
   expanded.add(created);
-  selectedFolder = created;
+  selectedFolder = selectedEntry = created;
   await renderFiles();
 }
 async function openNote(target: string) {
@@ -493,14 +508,82 @@ async function openNote(target: string) {
 }
 async function renameEntry(entry: Entry) {
   if (entry.path === privatePath || !(await canLeave())) return;
-  const name = await nameDialog(
-    "Rename",
-    entry.name.replace(/\.(md|markdown|textlock)$/i, ""),
-    "Rename",
-  );
-  if (!name) return;
-  const next = await storage.rename(entry.path, name);
-  remapEntry(entry.path, next);
+  if (sidebarHidden) toggleSidebar();
+  let ancestor = entry.path.slice(0, Math.max(entry.path.lastIndexOf("/"), entry.path.lastIndexOf("\\")));
+  while (workspace && ancestor && ancestor !== workspace.path && within(ancestor, workspace.path)) {
+    expanded.add(ancestor);
+    ancestor = ancestor.slice(0, Math.max(ancestor.lastIndexOf("/"), ancestor.lastIndexOf("\\")));
+  }
+  await renderFiles();
+  const row = [...document.querySelectorAll<HTMLButtonElement>("button.file-row")]
+    .find((row) => row.dataset.path === entry.path);
+  if (!row) return;
+  treeFocusedPath = selectedEntry = entry.path;
+  updateStatus();
+  const original = entry.directory ? entry.name : entry.name.replace(/\.(md|markdown|textlock)$/i, "");
+  const renameRow = document.createElement("div"), input = document.createElement("input");
+  renameRow.className = "file-row rename-row selected";
+  renameRow.dataset.path = entry.path;
+  renameRow.style.paddingLeft = row.style.paddingLeft;
+  renameRow.append(row.querySelector(".chevron")!.cloneNode(true), input);
+  input.className = "rename-input";
+  input.setAttribute("aria-label", "Rename");
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.maxLength = 120;
+  input.value = original;
+  row.hidden = true;
+  row.classList.remove("selected");
+  row.before(renameRow);
+  const next = await new Promise<string | null>((resolve) => {
+    let pending = false, cancelled = false, finished = false;
+    const finish = (value: string | null) => {
+      if (finished) return;
+      finished = true;
+      inlineRename = null;
+      input.onblur = input.onkeydown = null;
+      input.value = "";
+      renameRow.remove();
+      row.hidden = false;
+      resolve(value);
+    };
+    const commit = async () => {
+      if (pending || finished) return;
+      const name = input.value.trim();
+      if (!name || name === original) { finish(null); return; }
+      pending = true;
+      input.readOnly = true;
+      input.removeAttribute("aria-invalid");
+      try {
+        finish(await storage.rename(entry.path, name));
+      } catch (error) {
+        if (cancelled) { finish(null); return; }
+        notice(error);
+        input.setAttribute("aria-invalid", "true");
+        input.focus();
+      } finally {
+        pending = false;
+        input.readOnly = false;
+      }
+    };
+    inlineRename = {
+      commit: () => { void commit(); },
+      cancel: () => {
+        cancelled = true;
+        input.value = "";
+        if (!pending) finish(null);
+      },
+    };
+    input.onblur = () => { void commit(); };
+    input.onkeydown = (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") { event.preventDefault(); void commit(); }
+      if (event.key === "Escape") { event.preventDefault(); inlineRename?.cancel(); }
+    };
+    input.focus();
+    input.select();
+  });
+  if (next) remapEntry(entry.path, next);
   await renderFiles();
   updateStatus();
 }
@@ -510,6 +593,10 @@ function within(candidate: string | null, ancestor: string): candidate is string
       candidate.startsWith(ancestor + "\\"));
 }
 function remapEntry(previous: string, next: string) {
+  const queuedEntry = queuedInlineAction?.entry;
+  if (queuedEntry && within(queuedEntry.path, previous))
+    queuedEntry.path = next + queuedEntry.path.slice(previous.length);
+  if (within(selectedEntry, previous)) selectedEntry = next + selectedEntry.slice(previous.length);
   if (within(lastPrivateNote, previous))
     lastPrivateNote = next + lastPrivateNote.slice(previous.length);
   if (within(treeFocusedPath, previous))
@@ -532,7 +619,7 @@ async function moveEntry(entry: Entry, destination: string) {
   const next = await storage.move(entry.path, destination);
   remapEntry(entry.path, next);
   selectedFolder = destination;
-  treeFocusedPath = next;
+  treeFocusedPath = selectedEntry = next;
   let ancestor = destination;
   while (workspace && ancestor !== workspace.path &&
     within(ancestor, workspace.path)) {
@@ -549,6 +636,7 @@ async function trashEntry(entry: Entry) {
     path?.startsWith(entry.path + "/") ||
     path?.startsWith(entry.path + "\\");
   await storage.trash(entry.path);
+  if (within(selectedEntry, entry.path)) selectedEntry = null;
   if (within(lastPrivateNote, entry.path)) lastPrivateNote = null;
   expanded.delete(entry.path);
   if (
@@ -604,7 +692,7 @@ async function addFolder(
     };
     treeEntries.set(entry.path, entry);
     row.onfocus = () => {
-      treeFocusedPath = entry.path;
+      treeFocusedPath = selectedEntry = entry.path;
       selectedFolder = privateRoot && !privateUnlocked ? workspace!.path : entry.directory ? entry.path : folder;
       updateStatus();
     };
@@ -630,7 +718,8 @@ async function addFolder(
       if (privateRoot || privateConcealed && isPrivate(entry.path)) return;
       context = entry;
       $("move-private").hidden = !desktop || entry.directory || isPrivate(entry.path);
-      treeFocusedPath = entry.path;
+      treeFocusedPath = selectedEntry = entry.path;
+      updateStatus();
       $("set-password").hidden =
         !desktop || entry.directory || !!entry.protected;
       $("remove-password").hidden =
@@ -662,26 +751,47 @@ async function addFolder(
       row.onclick = () =>
         void action(
           async () => {
-            if (privateRoot && !privateUnlocked) {
-              if (await unlockPrivateFolder()) await renderFiles();
-              return;
-            }
-            selectedFolder = entry.path;
-            expanded.has(entry.path)
-              ? expanded.delete(entry.path)
-              : expanded.add(entry.path);
-            await fill();
+            await activateEntry(entry);
           },
           () => focusEntry(entry.path),
         );
     } else
       row.onclick = () =>
         void action(
-          () => openNote(entry.path),
+          () => activateEntry(entry),
           () => focusEntry(entry.path),
         );
   }
 }
+async function activateEntry(entry: Entry) {
+  if (!entry.directory) return openNote(entry.path);
+  if (entry.path === privatePath && !privateUnlocked) {
+    if (await unlockPrivateFolder()) await renderFiles();
+    return;
+  }
+  selectedFolder = selectedEntry = entry.path;
+  expanded.has(entry.path) ? expanded.delete(entry.path) : expanded.add(entry.path);
+  await renderFiles();
+}
+// Capture the destination before focus loss can commit a fast rename and replace
+// the tree between pointer-down and click. The user's first click still opens it.
+$("files").addEventListener("pointerdown", (event) => {
+  if (!inlineRename || event.button !== 0) return;
+  const row = (event.target as HTMLElement).closest<HTMLButtonElement>("button.file-row");
+  const entry = row && treeEntries.get(row.dataset.path!);
+  if (!row || !entry) return;
+  event.preventDefault();
+  row.dataset.renameClickHandled = "true";
+  queuedInlineAction = { entry, task: () => activateEntry(entry), after: () => focusEntry(entry.path) };
+  inlineRename.commit();
+});
+$("files").addEventListener("click", (event) => {
+  const row = (event.target as HTMLElement).closest<HTMLButtonElement>("button.file-row");
+  if (!row?.dataset.renameClickHandled) return;
+  delete row.dataset.renameClickHandled;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
 async function renderFiles() {
   const epoch = privateEpoch;
   treeEntries.clear();
@@ -843,7 +953,7 @@ if (Number.isInteger(rememberedSize) && rememberedSize >= 9 && rememberedSize <=
   zoomText(rememberedSize - 13);
 let shortcutsFocus: HTMLElement | null = null;
 function showShortcuts() {
-  if (document.querySelector("dialog[open]")) return;
+  if (inlineRename || document.querySelector("dialog[open]")) return;
   shortcutsFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   $<HTMLDialogElement>("shortcuts-dialog").showModal();
 }
@@ -963,6 +1073,7 @@ $("trash").onclick = () => {
 $("files").addEventListener("click", (event) => {
   if (event.target === $("files")) {
     selectedFolder = workspace?.path || null;
+    selectedEntry = null;
     updateStatus();
   }
 });
@@ -973,6 +1084,8 @@ document.addEventListener(
   "keydown",
   (event) => {
     if (event.isComposing) return;
+    if ((event.target as HTMLElement).closest(".rename-row") &&
+      !((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "w")) return;
     if ((event.metaKey || event.ctrlKey) && !event.altKey) {
       const zoom = event.key === "+" || event.key === "=" || event.code === "NumpadAdd" ? 1 :
         event.key === "-" || event.code === "NumpadSubtract" ? -1 :
@@ -1233,6 +1346,9 @@ function beginPrivateLock(waitForAction: boolean) {
   privateEpoch++;
   privateConcealed = true;
   document.body.classList.add("private-concealed");
+  inlineRename?.cancel();
+  queuedInlineAction = null;
+  if (isPrivate(selectedEntry)) selectedEntry = null;
   document.querySelectorAll<HTMLElement>('[data-private="true"]').forEach((el) => el.remove());
   if (privatePath) expanded.delete(privatePath);
   privateUnlocked = false;
