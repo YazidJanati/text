@@ -49,7 +49,7 @@ document.querySelector("#app")!.innerHTML = `
 <dialog id="unsaved"><form><p>Couldn’t save this note.</p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="discard">Discard</button><button value="export">Export copy</button></div></form></dialog>
 <dialog id="password-dialog"><form><h2 id="password-heading"></h2><label for="password-input">Password</label><input id="password-input" type="password" maxlength="1024" required><div id="password-confirm-row"><label for="password-confirm">Confirm password</label><input id="password-confirm" type="password" maxlength="1024" autocomplete="new-password"></div><p id="password-hint">No recovery if forgotten.</p><p id="password-error" role="alert" hidden></p><div class="dialog-actions"><button id="password-cancel" type="button">Cancel</button><button id="password-submit" type="submit"></button></div></form></dialog>
 <dialog id="export-warning"><form><p>Export an unencrypted Markdown copy?</p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="export">Export</button></div></form></dialog>
-<div id="context-menu" popover="auto"><button id="rename">Rename</button><button id="get-info">Get Info</button><button id="set-password">Set password</button><button id="remove-password">Remove password</button><button id="trash">Move to trash</button></div>`;
+<div id="context-menu" popover="auto"><button id="rename">Rename</button><button id="get-info">Get Info</button><button id="set-password">Set password</button><button id="remove-password">Remove password</button><button id="move-private">Move to Private</button><button id="trash">Move to trash</button></div>`;
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 let workspace: Workspace | null = null,
@@ -69,6 +69,14 @@ const expanded = new Set<string>();
 const treeEntries = new Map<string, Entry>();
 let treeFocusedPath: string | null = null;
 let draggedEntry: Entry | null = null;
+let privatePath: string | null = null, privateConfigured = false, privateUnlocked = false;
+let privateConcealed = false, privateAuthenticating = false, privateEpoch = 0;
+let lastPrivateNote: string | null = null;
+let privateDraft: { path: string; content: string; expected: string; saved: string } | null = null;
+let privateLockPromise: Promise<void> | null = null;
+let actionDone: Promise<void> | null = null;
+let cancelPasswordDialog: (() => void) | null = null;
+const isPrivate = (candidate: string | null) => !!privatePath && within(candidate, privatePath);
 const editor = createEditor($("editor"), "", changed);
 const showLatexNotation = setupLatexNotation({
   storage,
@@ -115,9 +123,9 @@ $("notice").querySelector("button")!.onclick = () => {
   $("notice").hidden = true;
 };
 function updateStatus() {
-  $("document-name").textContent = title();
+  $("document-name").textContent = privateConcealed && isPrivate(path) ? "" : title();
   $("dirty").hidden = !dirty();
-  document.title = `${dirty() ? "● " : ""}${title() ? title() + " — " : ""}text`;
+  document.title = isPrivate(path) ? "Private — text" : `${dirty() ? "● " : ""}${title() ? title() + " — " : ""}text`;
   $("document-name").hidden = !path;
   if (desktop)
     import("@tauri-apps/api/window")
@@ -157,7 +165,7 @@ function setDocument(file: DocumentFile) {
     0,
     Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")),
   );
-  remember("last-note", path);
+  remember("last-note", isPrivate(path) ? "" : path);
   let ancestor = selectedFolder;
   while (
     workspace &&
@@ -239,6 +247,7 @@ function nameDialog(
 function passwordDialog<T>(
   setting: boolean,
   submitPassword: (password: string) => Promise<T>,
+  heading?: string,
 ): Promise<T | null> {
   const dialog = $<HTMLDialogElement>("password-dialog"),
     form = dialog.querySelector("form")!;
@@ -246,8 +255,8 @@ function passwordDialog<T>(
     confirm = $<HTMLInputElement>("password-confirm");
   const submitButton = $<HTMLButtonElement>("password-submit"),
     cancelButton = $<HTMLButtonElement>("password-cancel");
-  let pending = false;
-  $("password-heading").textContent = setting ? "Set password" : "Unlock note";
+  let pending = false, cancelled = false, finished = false;
+  $("password-heading").textContent = heading || (setting ? "Set password" : "Unlock note");
   $("password-confirm-row").hidden = !setting;
   confirm.required = setting;
   $("password-hint").hidden = !setting;
@@ -257,12 +266,20 @@ function passwordDialog<T>(
   submitButton.textContent = setting ? "Set password" : "Unlock";
   return new Promise((resolve) => {
     const finish = (result: T | null) => {
+      if (finished) return;
+      finished = true;
+      cancelPasswordDialog = null;
       input.value = confirm.value = "";
       form.removeEventListener("submit", submit);
       dialog.removeEventListener("cancel", cancel);
       cancelButton.onclick = null;
       dialog.close();
       resolve(result);
+    };
+    cancelPasswordDialog = () => {
+      cancelled = true;
+      input.value = confirm.value = "";
+      if (!pending) finish(null);
     };
     const cancel = (event: Event) => {
       event.preventDefault();
@@ -288,8 +305,9 @@ function passwordDialog<T>(
       input.value = confirm.value = "";
       try {
         const result = await submitPassword(value);
-        finish(result);
+        finish(cancelled ? null : result);
       } catch (error) {
+        if (cancelled) { finish(null); return; }
         $("password-error").textContent = String(error);
         $("password-error").hidden = false;
       } finally {
@@ -420,8 +438,10 @@ async function canLeave() {
   return choice === "discard";
 }
 async function action(task: () => Promise<void>, after?: () => void) {
-  if (busy) return;
+  if (busy || privateLockPromise) return;
   busy = true;
+  let complete!: () => void;
+  actionDone = new Promise<void>((resolve) => { complete = resolve; });
   editor.dom.inert = true;
   try {
     await task();
@@ -433,6 +453,8 @@ async function action(task: () => Promise<void>, after?: () => void) {
     if (after) after();
     else if (path) editor.focus();
     else focusEntry(treeFocusedPath);
+    actionDone = null;
+    complete();
   }
 }
 function parent() {
@@ -462,7 +484,7 @@ async function openNote(target: string) {
   await renderFiles();
 }
 async function renameEntry(entry: Entry) {
-  if (!(await canLeave())) return;
+  if (entry.path === privatePath || !(await canLeave())) return;
   const name = await nameDialog(
     "Rename",
     entry.name.replace(/\.(md|markdown|textlock)$/i, ""),
@@ -480,11 +502,13 @@ function within(candidate: string | null, ancestor: string): candidate is string
       candidate.startsWith(ancestor + "\\"));
 }
 function remapEntry(previous: string, next: string) {
+  if (within(lastPrivateNote, previous))
+    lastPrivateNote = next + lastPrivateNote.slice(previous.length);
   if (within(treeFocusedPath, previous))
     treeFocusedPath = next + treeFocusedPath.slice(previous.length);
   if (within(path, previous)) {
     path = next + path.slice(previous.length);
-    remember("last-note", path);
+    remember("last-note", isPrivate(path) ? "" : path);
   }
   if (within(selectedFolder, previous))
     selectedFolder = next + selectedFolder.slice(previous.length);
@@ -511,12 +535,13 @@ async function moveEntry(entry: Entry, destination: string) {
   updateStatus();
 }
 async function trashEntry(entry: Entry) {
-  if (!(await canLeave())) return;
+  if (entry.path === privatePath || !(await canLeave())) return;
   const current =
     path === entry.path ||
     path?.startsWith(entry.path + "/") ||
     path?.startsWith(entry.path + "\\");
   await storage.trash(entry.path);
+  if (within(lastPrivateNote, entry.path)) lastPrivateNote = null;
   expanded.delete(entry.path);
   if (
     selectedFolder === entry.path ||
@@ -542,13 +567,19 @@ async function addFolder(
   folder: string,
   depth: number,
 ) {
-  for (const entry of await storage.listFolder(folder)) {
+  const entries = await storage.listFolder(folder);
+  if (folder === workspace?.path && privatePath)
+    entries.push({ path: privatePath, name: "Private", directory: true });
+  for (const entry of entries) {
+    const privateRoot = entry.path === privatePath;
+    if (isPrivate(entry.path) && !privateRoot && (!privateUnlocked || privateConcealed)) continue;
     const item = document.createElement("div"),
       row = document.createElement("button");
     row.className = "file-row";
     row.dataset.path = entry.path;
     row.dataset.parent = folder;
-    row.draggable = true;
+    row.draggable = !privateRoot;
+    if (isPrivate(entry.path) && !privateRoot) item.dataset.private = "true";
     row.ondragstart = (event) => {
       if (busy || !event.dataTransfer) {
         event.preventDefault();
@@ -566,7 +597,7 @@ async function addFolder(
     treeEntries.set(entry.path, entry);
     row.onfocus = () => {
       treeFocusedPath = entry.path;
-      selectedFolder = entry.directory ? entry.path : folder;
+      selectedFolder = privateRoot && !privateUnlocked ? workspace!.path : entry.directory ? entry.path : folder;
       updateStatus();
     };
     row.style.paddingLeft = `${14 + depth * 14}px`;
@@ -574,7 +605,12 @@ async function addFolder(
     row.querySelector(".file-label")!.textContent = entry.directory
       ? entry.name
       : entry.name.replace(/\.(md|markdown|textlock)$/i, "");
-    row.title = entry.protected
+    if (privateRoot) {
+      row.id = "private-folder";
+      row.querySelector(".chevron")!.innerHTML = icon("lock");
+      row.setAttribute("aria-description", privateUnlocked ? "Unlocked. Switch apps to lock." : "Locked. Password required.");
+    }
+    row.title = privateRoot ? (privateUnlocked ? "Private · unlocked" : "Private · locked") : entry.protected
       ? entry.name + " · password protected"
       : entry.name;
     if (entry.protected)
@@ -583,12 +619,14 @@ async function addFolder(
     container.append(item);
     row.oncontextmenu = (event) => {
       event.preventDefault();
+      if (privateRoot || privateConcealed && isPrivate(entry.path)) return;
       context = entry;
+      $("move-private").hidden = !desktop || entry.directory || isPrivate(entry.path);
       treeFocusedPath = entry.path;
       $("set-password").hidden =
         !desktop || entry.directory || !!entry.protected;
       $("remove-password").hidden =
-        !desktop || entry.directory || !entry.protected;
+        !desktop || entry.directory || !entry.protected || isPrivate(entry.path);
       const menu = $("context-menu");
       menu.style.left = `${Math.min(event.clientX, innerWidth - 150)}px`;
       menu.style.top = `${Math.min(event.clientY, innerHeight - 140)}px`;
@@ -605,7 +643,8 @@ async function addFolder(
       item.append(children);
       const fill = async () => {
         children.replaceChildren();
-        if (expanded.has(entry.path))
+        if (privateRoot) children.dataset.private = "true";
+        if (expanded.has(entry.path) && (!privateRoot || privateUnlocked))
           await addFolder(children, entry.path, depth + 1);
         row.setAttribute("aria-expanded", String(expanded.has(entry.path)));
         row.classList.toggle("expanded", expanded.has(entry.path));
@@ -615,6 +654,10 @@ async function addFolder(
       row.onclick = () =>
         void action(
           async () => {
+            if (privateRoot && !privateUnlocked) {
+              if (await unlockPrivateFolder()) await renderFiles();
+              return;
+            }
             selectedFolder = entry.path;
             expanded.has(entry.path)
               ? expanded.delete(entry.path)
@@ -632,9 +675,11 @@ async function addFolder(
   }
 }
 async function renderFiles() {
+  const epoch = privateEpoch;
   treeEntries.clear();
   const fragment = document.createElement("div");
   if (workspace) await addFolder(fragment, workspace.path, 0);
+  if (epoch !== privateEpoch) return;
   $("files").replaceChildren(...fragment.childNodes);
   updateStatus();
 }
@@ -643,7 +688,7 @@ async function firstNote(folder: string): Promise<string | null> {
   const file = entries.find((entry) => !entry.directory);
   if (file) return file.path;
   for (const entry of entries)
-    if (entry.directory) {
+    if (entry.directory && entry.path !== privatePath) {
       const found = await firstNote(entry.path);
       if (found) return found;
     }
@@ -712,7 +757,8 @@ function dropDestination(event: DragEvent) {
   const destination = folder?.path || workspace.path;
   const sourceParent = draggedEntry.path.slice(0,
     Math.max(draggedEntry.path.lastIndexOf("/"), draggedEntry.path.lastIndexOf("\\")));
-  if (destination === sourceParent || within(destination, draggedEntry.path)) return null;
+  if (destination === sourceParent || within(destination, draggedEntry.path) ||
+    isPrivate(destination) !== isPrivate(draggedEntry.path)) return null;
   return { path: destination, element: row || $("files") };
 }
 $("sidebar").addEventListener("dragover", (event) => {
@@ -832,6 +878,7 @@ Vim.defineEx("write", "w", () => {
 });
 const quit = () =>
   void action(async () => {
+    if (privateDraft && !(await unlockPrivateFolder())) return;
     if (await canLeave()) {
       if (desktop) await invoke("quit");
       else notice("Quit is available in the desktop app.");
@@ -882,6 +929,24 @@ $("set-password").onclick = () => {
 $("remove-password").onclick = () => {
   $("context-menu").hidePopover();
   if (context) void action(() => protectEntry(context!, true));
+};
+$("move-private").onclick = () => {
+  $("context-menu").hidePopover();
+  const entry = context;
+  if (entry) void action(async () => {
+    if (!(await canLeave())) return;
+    if (!privateUnlocked && !(await unlockPrivateFolder(false))) return;
+    if (path !== entry.path) {
+      const file = await readDocument(entry.path);
+      if (!file) return;
+      setDocument(file);
+    }
+    const result = await storage.moveToPrivate(entry.path, diskContent);
+    setDocument(result);
+    lastPrivateNote = result.path;
+    expanded.add(privatePath!);
+    await renderFiles();
+  });
 };
 $("trash").onclick = () => {
   $("context-menu").hidePopover();
@@ -1007,17 +1072,20 @@ async function refreshMathDefinitions() {
   }
 }
 window.addEventListener("focus", () => { void refreshMathDefinitions(); });
-window.addEventListener("blur", () => {
-  if (ready) void flush();
+window.addEventListener("blur", concealPrivate);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) concealPrivate();
 });
 if (desktop) {
   const close = () =>
     void action(async () => {
+      if (privateDraft && !(await unlockPrivateFolder())) return;
       if (await canLeave()) await invoke("quit");
     });
   import("@tauri-apps/api/event")
     .then(async ({ listen }) => {
       await listen("request-quit", close);
+      await listen("tauri://blur", concealPrivate);
       await listen("close-note", () => {
         if (!document.querySelector("dialog[open]")) void action(closeCurrent);
       });
@@ -1038,6 +1106,11 @@ if (desktop) {
 if (recalled("sidebar") === "true") toggleSidebar();
 void action(async () => {
   workspace = await storage.library();
+  if (desktop) {
+    const status = await storage.privateStatus();
+    privatePath = status.path;
+    privateConfigured = status.configured;
+  }
   selectedFolder = workspace.path;
   const last = recalled("last-note");
   if (recalled("closed") === "true") {
@@ -1047,7 +1120,7 @@ void action(async () => {
     return;
   }
   let initial: DocumentFile | null = null;
-  if (last) {
+  if (last && !isPrivate(last)) {
     try {
       initial = await storage.readFile(last);
     } catch (error) {
@@ -1092,4 +1165,111 @@ void action(async () => {
   await renderFiles();
 }).then(refreshMathDefinitions);
 
-setupUpdates({ desktop, button: $<HTMLButtonElement>("check-updates"), run: (task) => action(task), save: flush });
+setupUpdates({ desktop, button: $<HTMLButtonElement>("check-updates"), run: (task) => action(task), save: () => privateDraft ? Promise.resolve(false) : flush() });
+
+async function unlockPrivateFolder(restore = true): Promise<boolean> {
+  if (restore && (privateDraft || lastPrivateNote) && !(await canLeave())) return false;
+  const epoch = privateEpoch;
+  privateConcealed = false;
+  document.body.classList.remove("private-concealed");
+  privateAuthenticating = true;
+  try {
+    const result = await passwordDialog(!privateConfigured, async (password) => {
+      await storage.unlockPrivate(password, !privateConfigured);
+      return true;
+    }, privateConfigured ? "Unlock Private" : "Set Private folder password");
+    if (!result || epoch !== privateEpoch) return false;
+    privateConfigured = privateUnlocked = true;
+    selectedFolder = privatePath;
+    expanded.add(privatePath!);
+    if (restore && (privateDraft || lastPrivateNote)) {
+      const target = privateDraft?.path || lastPrivateNote!;
+      let file: DocumentFile | null = null;
+      try { file = await storage.readFile(target); }
+      catch {
+        if (!privateDraft) {
+          lastPrivateNote = null;
+          notice("Your last private note is no longer available. Choose another note in Private.");
+          return true;
+        }
+      }
+      if (privateDraft) {
+        const draft = privateDraft;
+        setDocument({ path: target, content: draft.content, protected: true });
+        diskContent = draft.expected;
+        savedContent = draft.saved;
+        privateDraft = null;
+        notice("Your unsaved private edits were restored. Save or export a copy before leaving this note.");
+        updateStatus();
+      } else if (file) setDocument(file);
+    }
+    return true;
+  } finally { privateAuthenticating = false; }
+}
+function concealPrivate() {
+  if (!ready) return;
+  if (!privateUnlocked && !privateAuthenticating && !isPrivate(path)) {
+    void flush();
+    return;
+  }
+  if (privateLockPromise) return;
+  // Conceal synchronously, before awaiting a save, dialog or in-flight operation.
+  privateEpoch++;
+  privateConcealed = true;
+  document.body.classList.add("private-concealed");
+  document.querySelectorAll<HTMLElement>('[data-private="true"]').forEach((el) => el.remove());
+  if (privatePath) expanded.delete(privatePath);
+  privateUnlocked = false;
+  context = draggedEntry = null;
+  treeFocusedPath = selectedFolder = workspace!.path;
+  $("context-menu").hidePopover();
+  $("notice").hidden = true;
+  for (const id of ["name-input", "password-input", "password-confirm"])
+    $<HTMLInputElement>(id).value = "";
+  cancelPasswordDialog?.();
+  document.querySelectorAll<HTMLDialogElement>('dialog[open]:not(#password-dialog)').forEach((dialog) => {
+    if (dialog.dispatchEvent(new Event("cancel", { cancelable: true }))) dialog.close();
+  });
+  const row = $("private-folder");
+  if (row) {
+    row.setAttribute("aria-expanded", "false");
+    row.setAttribute("aria-description", "Locked. Password required.");
+    row.classList.remove("expanded");
+    row.title = "Private · locked";
+  }
+  document.title = "text";
+  if (desktop) import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTitle("text")).catch(() => {});
+  const pendingAction = actionDone;
+  privateLockPromise = (async () => {
+    if (pendingAction) await pendingAction;
+    const privateNote = isPrivate(path);
+    const saved = await flush();
+    if (privateNote && path) {
+      lastPrivateNote = path;
+      if (!saved) privateDraft = { path, content: text(), expected: diskContent, saved: savedContent };
+      clearDocument();
+    }
+    // Hidden dialogs can contain titles/paths. Clear them before revealing the app.
+    document.querySelectorAll<HTMLDialogElement>("dialog[open]").forEach((dialog) => dialog.dispatchEvent(new Event("cancel", { cancelable: true })));
+    $("info-name").textContent = "";
+    $("info-details").replaceChildren();
+    await storage.lockPrivate();
+    if (privatePath) {
+      expanded.delete(privatePath);
+      for (const folder of [...expanded]) if (isPrivate(folder)) expanded.delete(folder);
+    }
+    for (const key of [...treeEntries.keys()]) if (isPrivate(key)) treeEntries.delete(key);
+    selectedFolder = workspace!.path;
+    treeFocusedPath = privatePath;
+    await renderFiles();
+  })().catch(() => {
+    // Keep the veil in place if locking fails; never expose private content.
+    notice("Couldn’t finish locking Private. Return to Private to retry.");
+  }).finally(() => {
+    privateLockPromise = null;
+    if (!isPrivate(path)) {
+      privateConcealed = false;
+      document.body.classList.remove("private-concealed");
+    }
+  });
+}

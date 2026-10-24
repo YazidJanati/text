@@ -14,6 +14,8 @@ async function native(
       w.calls = [];
       w.cancelExport = false;
       w.testProtected = JSON.parse(sessionStorage.getItem("protected") || "{}");
+      w.privateUnlocked = false;
+      w.privatePassword = sessionStorage.getItem("privatePassword");
       w.unlocked = null;
       const persistProtected = () =>
         sessionStorage.setItem("protected", JSON.stringify(w.testProtected));
@@ -57,10 +59,39 @@ async function native(
             persist();
             return;
           }
-          if (command === "list_folder")
+          if (command === "private_status") return { path: "/notes/.private", configured: !!w.privatePassword };
+          if (command === "unlock_private") {
+            if (w.holdUnlock) await new Promise((resolve) => { w.releaseUnlock = resolve; });
+            if (args.setup) {
+              if (w.privatePassword) throw "Already configured";
+              w.privatePassword = args.password;
+              sessionStorage.setItem("privatePassword", args.password);
+            } else if (args.password !== w.privatePassword) throw "Incorrect private folder password";
+            w.privateUnlocked = true;
+            return;
+          }
+          if (command === "lock_private") {
+            w.privateUnlocked = false;
+            if (w.unlocked?.startsWith("/notes/.private/")) w.unlocked = null;
+            return;
+          }
+          if (command === "move_to_private") {
+            if (!w.privateUnlocked) throw "PRIVATE_LOCKED";
+            const path = "/notes/.private/" + args.path.split("/").at(-1).replace(/\.(md|markdown|textlock)$/i, ".textlock");
+            if (path in w.testFiles) throw "Already exists";
+            w.testProtected[path] = { content: args.expected, password: w.privatePassword };
+            w.testFiles[path] = "encrypted";
+            delete w.testFiles[args.path]; delete w.testProtected[args.path];
+            w.unlocked = path;
+            persist(); persistProtected();
+            return { path, content: args.expected, protected: true };
+          }
+          if (command === "list_folder") {
+            if (args.path.startsWith("/notes/.private") && !w.privateUnlocked) throw "PRIVATE_LOCKED";
             return Object.keys(w.testFiles)
               .filter(
                 (p) =>
+                  !p.split("/").at(-1)!.startsWith(".") &&
                   p.startsWith(args.path + "/") &&
                   !p.slice(args.path.length + 1).includes("/") &&
                   (w.testFiles[p] === null || /\.(md|markdown|textlock)$/i.test(p)),
@@ -76,6 +107,7 @@ async function native(
                   Number(b.directory) - Number(a.directory) ||
                   a.name.localeCompare(b.name),
               );
+          }
           if (command === "entry_info") {
             if (!(args.path in w.testFiles)) throw "Missing item";
             return {
@@ -130,11 +162,25 @@ async function native(
             return { path, content, protected: false };
           }
           if (command === "read_file") {
+            if (args.path.startsWith("/notes/.private/")) {
+              if (!w.privateUnlocked) throw "PRIVATE_LOCKED";
+              w.unlocked = args.path;
+              return { path: args.path, content: w.testProtected[args.path].content, protected: true };
+            }
             if (w.testProtected[args.path]) throw "PASSWORD_REQUIRED";
             w.unlocked = null;
             if (typeof w.testFiles[args.path] !== "string")
               throw "Missing note";
             return { path: args.path, content: w.testFiles[args.path] };
+          }
+          if (command === "create_note" && args.parent.startsWith("/notes/.private")) {
+            if (!w.privateUnlocked) throw "PRIVATE_LOCKED";
+            const path = unique(args.parent, args.name || "Untitled", ".textlock");
+            w.testFiles[path] = "encrypted";
+            w.testProtected[path] = { content: "", password: w.privatePassword };
+            w.unlocked = path;
+            persist(); persistProtected();
+            return { path, content: "", protected: true };
           }
           if (command === "create_note") {
             const path = unique(args.parent, args.name || "Untitled", ".md");
@@ -149,6 +195,7 @@ async function native(
             return path;
           }
           if (command === "save_file") {
+            if (w.failPrivateSave && args.path.startsWith("/notes/.private/")) throw "Disk unavailable";
             if (w.testProtected[args.path]) {
               if (w.unlocked !== args.path) throw "Note is closed";
               if (w.testProtected[args.path].content !== args.expected)
@@ -1341,4 +1388,166 @@ test("F1 Help opens the LaTeX notation editor directly", async ({ page }) => {
   await expect(page.locator("#shortcuts-dialog")).not.toBeVisible();
   await expect(page.getByRole("textbox", { name: "Definitions", exact: true })).toBeEnabled();
   await expect(page.locator("#latex-notation-dialog")).toBeVisible();
+});
+
+async function unlockPrivate(page: Page, setup = false) {
+  await page.locator("#private-folder").click();
+  await expect(page.locator("#password-heading")).toHaveText(setup ? "Set Private folder password" : "Unlock Private");
+  await page.locator("#password-input").fill("folder password");
+  if (setup) await page.locator("#password-confirm").fill("folder password");
+  await page.locator("#password-submit").click();
+  await expect(page.locator("#password-dialog")).toBeHidden();
+}
+async function privateNote(page: Page) {
+  await native(page);
+  await unlockPrivate(page, true);
+  await page.locator("#new-note").click();
+  await replace(page, "Secret content");
+  await page.locator("#document-name").click();
+  await page.locator("#name-input").fill("Secret title");
+  await page.locator("#name-submit").click();
+  await expect(page.locator("#document-name")).toHaveText("Secret title");
+}
+test("Private is permanent, requires a password and creates encrypted notes", async ({ page }) => {
+  await native(page);
+  await expect(page.locator("#private-folder")).toBeVisible();
+  await page.locator("#private-folder").click();
+  await page.locator("#password-cancel").click();
+  expect(await page.evaluate(() => (window as any).calls.some((c: any) => c.command === "list_folder" && c.args.path === "/notes/.private"))).toBe(false);
+  await unlockPrivate(page, true);
+  await page.locator("#new-note").click();
+  await replace(page, "Secret content");
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page, "/notes/.private/Untitled.textlock")).toBe("encrypted");
+  await expect(page).toHaveTitle("Private — text");
+  await page.locator("#private-folder").focus();
+  await page.keyboard.press("F2");
+  await expect(page.locator("#name-dialog")).toBeHidden();
+  await page.keyboard.press("Delete");
+  await expect(page.locator("#private-folder")).toBeVisible();
+});
+test("switching apps immediately hides private content, saves, and requires authentication to restore", async ({ page }) => {
+  await privateNote(page);
+  await replace(page, "Latest private edit");
+  const hiddenImmediately = await page.evaluate(() => {
+    window.dispatchEvent(new Event("blur"));
+    return getComputedStyle(document.querySelector("#editor")!).visibility === "hidden" && !document.querySelector('[data-private="true"]');
+  });
+  expect(hiddenImmediately).toBe(true);
+  await expect(page.locator("#editor")).toBeHidden();
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  await expect.poll(() => page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  expect(await page.evaluate(() => (window as any).testProtected["/notes/.private/Secret title.textlock"].content)).toBe("Latest private edit");
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator("#editor")).toBeHidden();
+  await page.locator("#private-folder").click();
+  await page.locator("#password-input").fill("wrong");
+  await page.locator("#password-submit").click();
+  await expect(page.locator("#password-error")).toContainText("Incorrect");
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  await page.locator("#password-input").fill("folder password");
+  await page.locator("#password-submit").click();
+  await expect(page.locator(".cm-content")).toHaveText("Latest private edit");
+  await expect(page.locator("#document-name")).toHaveText("Secret title");
+});
+test("restarting keeps private titles hidden and never asks for a password automatically", async ({ page }) => {
+  await privateNote(page);
+  await page.reload();
+  await expect(page.locator("#private-folder")).toBeVisible();
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  await expect(page.locator("#password-dialog")).toBeHidden();
+  expect(await page.evaluate(() => localStorage.getItem("notes:last-note"))).not.toContain(".private");
+  await unlockPrivate(page);
+  await expect(page.locator("#files")).toContainText("Secret title");
+});
+test("private lock retains failed-save edits behind the folder password", async ({ page }) => {
+  await privateNote(page);
+  await page.evaluate(() => { (window as any).failPrivateSave = true; });
+  await replace(page, "Unsaved private draft");
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(page.locator("#editor")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  await page.evaluate(() => { (window as any).failPrivateSave = false; });
+  await unlockPrivate(page);
+  await expect(page.locator(".cm-content")).toHaveText("Unsaved private draft");
+  await expect(page.locator("#dirty")).toBeVisible();
+  await page.keyboard.press(`${mod}+s`);
+  expect(await page.evaluate(() => (window as any).testProtected["/notes/.private/Secret title.textlock"].content)).toBe("Unsaved private draft");
+});
+test("a rename dialog cannot keep Private unlocked after switching apps", async ({ page }) => {
+  await privateNote(page);
+  await page.locator("#document-name").click();
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect.poll(() => page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  await expect(page.locator("#name-dialog")).toBeHidden();
+  await expect(page.locator("#editor")).toBeHidden();
+  await unlockPrivate(page);
+  await expect(page.locator("#document-name")).toHaveText("Secret title");
+});
+test("an unlock completing after focus loss cannot reveal Private", async ({ page }) => {
+  await privateNote(page);
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect.poll(() => page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  await page.locator("#private-folder").click();
+  await page.evaluate(() => { (window as any).holdUnlock = true; });
+  await page.locator("#password-input").fill("folder password");
+  await page.locator("#password-submit").click();
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("blur"));
+    (window as any).releaseUnlock();
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  await expect(page.locator("#password-dialog")).toBeHidden();
+  await expect(page.locator("#editor")).toBeHidden();
+});
+test("Move to Private protects an existing note without exposing it after locking", async ({ page }) => {
+  await native(page);
+  await replace(page, "Personal note");
+  await fileRow(page, "/notes/Untitled.md").click({ button: "right" });
+  await page.locator("#move-private").click();
+  await page.locator("#password-input").fill("folder password");
+  await page.locator("#password-confirm").fill("folder password");
+  await page.locator("#password-submit").click();
+  await expect(page.locator(".cm-content")).toHaveText("Personal note");
+  expect(await disk(page)).toBeUndefined();
+  expect(await disk(page, "/notes/.private/Untitled.textlock")).toBe("encrypted");
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(page.locator("#files")).not.toContainText("Untitled");
+});
+
+test("cancelling Private leaves new notes in the public library", async ({ page }) => {
+  await native(page);
+  await page.locator("#private-folder").click();
+  await page.locator("#password-cancel").click();
+  await page.locator("#new-note").click();
+  await expect(page.locator("#document-name")).toHaveText("Untitled 2");
+  expect(await disk(page, "/notes/Untitled 2.md")).toBe("");
+});
+test("resuming a private note flushes pending edits in the public note first", async ({ page }) => {
+  await privateNote(page);
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect.poll(() => page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  await fileRow(page, "/notes/Untitled.md").click();
+  await replace(page, "Keep my public edits");
+  await unlockPrivate(page);
+  await expect(page.locator(".cm-content")).toHaveText("Secret content");
+  expect(await disk(page)).toBe("Keep my public edits");
+});
+test("a hidden unsaved draft remains exportable if the original file disappears", async ({ page }) => {
+  await privateNote(page);
+  await page.evaluate(() => { (window as any).failPrivateSave = true; });
+  await replace(page, "Recoverable draft");
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect.poll(() => page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  await page.evaluate(() => {
+    delete (window as any).testFiles["/notes/.private/Secret title.textlock"];
+    delete (window as any).testProtected["/notes/.private/Secret title.textlock"];
+  });
+  await unlockPrivate(page);
+  await expect(page.locator(".cm-content")).toHaveText("Recoverable draft");
+  await page.keyboard.press(`${mod}+Shift+s`);
+  await expect(page.locator("#export-warning")).toBeVisible();
+  await page.locator('#export-warning button[value="export"]').click();
+  expect(await page.evaluate(() => (window as any).calls.some((c: any) => c.command === "save_as" && c.args.content === "Recoverable draft"))).toBe(true);
 });

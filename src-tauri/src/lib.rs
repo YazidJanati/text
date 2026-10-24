@@ -35,6 +35,7 @@ struct Session {
 struct Files {
     root: Option<PathBuf>,
     opened: HashMap<PathBuf, Session>,
+    private_secret: Option<protection::Secret>,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -173,6 +174,13 @@ fn document(
     result
 }
 fn load(files: &mut Files, path: PathBuf) -> AppResult<Document> {
+    check_private_access(files, &path)?;
+    if in_private(files, &path) {
+        let secret = files.private_secret.as_ref().ok_or("PRIVATE_LOCKED")?.clone();
+        let disk = read_disk(&path)?;
+        let content = protection::open(&disk, &secret)?;
+        return Ok(document(files, path, content, disk, Some(secret)));
+    }
     if protected(&path) {
         return Err("PASSWORD_REQUIRED".into());
     }
@@ -220,6 +228,7 @@ fn save_checked(
     if !allowed(files, &path) {
         return Err("Open this note before saving.".into());
     }
+    check_private_access(files, &path)?;
     let session = files
         .opened
         .get_mut(&path)
@@ -248,7 +257,7 @@ fn save_checked(
 }
 fn unlock_note(files: &mut Files, path: &Path, password: &str) -> AppResult<Document> {
     let path = library_path(files, &display(path))?;
-    if !protected(&path) {
+    if in_private(files, &path) || !protected(&path) {
         return load(files, path);
     }
     let disk = read_disk(&path)?;
@@ -297,6 +306,7 @@ fn protect_note(
 }
 fn unprotect_note(files: &mut Files, path: &Path) -> AppResult<Document> {
     let path = library_path(files, &display(path))?;
+    if in_private(files, &path) { return Err("Private notes always stay encrypted. Export a copy to make one public.".into()); }
     let session = files.opened.get(&path).ok_or("Unlock this note first.")?;
     if !protected(&path) || session.secret.is_none() {
         return Err("Unlock this protected note first.".into());
@@ -361,6 +371,7 @@ fn list_folder(path: String, state: State<'_, Mutex<Files>>) -> AppResult<Vec<En
         .canonicalize()
         .map_err(|e| e.to_string())?;
     let files = state.lock().map_err(|e| e.to_string())?;
+    check_private_access(&files, &path)?;
     let root = files.root.as_ref().ok_or("Open a folder first.")?;
     if !path.starts_with(root) {
         return Err("This folder is outside the open workspace.".into());
@@ -396,6 +407,7 @@ fn read_file(path: String, state: State<'_, Mutex<Files>>) -> AppResult<Document
         .canonicalize()
         .map_err(|e| e.to_string())?;
     let mut files = state.lock().map_err(|e| e.to_string())?;
+    check_private_access(&files, &path)?;
     if !allowed(&files, &path) {
         return Err("Open this file or its folder first.".into());
     }
@@ -456,7 +468,7 @@ pub fn run() {
             fs::create_dir_all(&root)?;
             app.manage(Mutex::new(Files {
                 root: Some(root.canonicalize()?),
-                opened: HashMap::new(),
+                ..Files::default()
             }));
             let menu = native_menu(app.handle())?;
             app.set_menu(menu)?;
@@ -484,6 +496,10 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            private_status,
+            unlock_private,
+            lock_private,
+            move_to_private,
             unlock_file,
             set_password,
             remove_password,
@@ -563,6 +579,7 @@ fn library_path(files: &Files, path: &str) -> AppResult<PathBuf> {
     if !path.starts_with(&root) {
         return Err("This item is outside your notes library.".into());
     }
+    check_private_access(files, &path)?;
     Ok(path)
 }
 fn valid_name(name: &str) -> AppResult<String> {
@@ -611,8 +628,13 @@ fn create_managed(
         .or_else(|| name.strip_suffix(".markdown"))
         .unwrap_or(name);
     let name = valid_name(stem)?;
-    let path = unique_path(&parent, &name, ".md");
-    atomic_write(&path, &content)?;
+    let private = in_private(files, &parent);
+    let path = unique_path(&parent, &name, if private { ".textlock" } else { ".md" });
+    if private {
+        if content.len() as u64 > MAX_BYTES { return Err("This note exceeds the 8 MB limit.".into()); }
+        let disk = protection::seal(&content, files.private_secret.as_ref().ok_or("PRIVATE_LOCKED")?)?;
+        atomic_bytes(&path, &disk, true)?;
+    } else { atomic_write(&path, &content)?; }
     load(files, path.canonicalize().map_err(|e| e.to_string())?)
 }
 #[tauri::command]
@@ -698,8 +720,8 @@ fn rename_entry(path: String, name: String, state: State<'_, Mutex<Files>>) -> A
 }
 fn rename_managed(files: &mut Files, source: &str, requested_name: &str) -> AppResult<String> {
     let path = library_path(files, source)?;
-    if path == root_path(files)? {
-        return Err("The library itself cannot be renamed.".into());
+    if path == root_path(files)? || path == private_root(files)? {
+        return Err("This permanent folder cannot be renamed.".into());
     }
     let is_directory = path.is_dir();
     let mut name = valid_name(requested_name)?;
@@ -772,14 +794,17 @@ fn remap_opened(files: &mut Files, path: &Path, target: &Path) {
 fn move_managed(files: &mut Files, source: &str, parent: &str) -> AppResult<String> {
     let path = library_path(files, source)?;
     let parent = library_path(files, parent)?;
-    if path == root_path(files)? {
-        return Err("The library itself cannot be moved.".into());
+    if path == root_path(files)? || path == private_root(files)? {
+        return Err("This permanent folder cannot be moved.".into());
     }
     if !parent.is_dir() {
         return Err("Choose a folder.".into());
     }
     if parent.starts_with(&path) {
         return Err("A folder cannot be moved into itself.".into());
+    }
+    if in_private(files, &path) != in_private(files, &parent) {
+        return Err("Use Move to Private to protect a note, or export a copy to make it public.".into());
     }
     let target = parent.join(path.file_name().ok_or("Missing name.")?);
     if target == path {
@@ -803,8 +828,8 @@ fn trash_entry(path: String, state: State<'_, Mutex<Files>>) -> AppResult<()> {
     let mut files = state.lock().map_err(|e| e.to_string())?;
     let path = library_path(&files, &path)?;
     let root = root_path(&files)?;
-    if path == root {
-        return Err("The library itself cannot be removed.".into());
+    if path == root || path == private_root(&files)? {
+        return Err("This permanent folder cannot be removed.".into());
     }
     let trash = root
         .parent()
@@ -961,7 +986,7 @@ mod library_tests {
         let root = dir.path().canonicalize().unwrap();
         let mut files = Files {
             root: Some(root.clone()),
-            opened: HashMap::new(),
+            ..Files::default()
         };
         let source = "# Math\n\n$E=mc^2$\n\n$$\n\\int_0^1 x^2 dx\n$$\n";
         let first = create_managed(&mut files, &display(&root), "Physics", source.into()).unwrap();
@@ -977,7 +1002,7 @@ mod library_tests {
         let outside = tempfile::tempdir().unwrap();
         let mut files = Files {
             root: Some(dir.path().canonicalize().unwrap()),
-            opened: HashMap::new(),
+            ..Files::default()
         };
         assert!(create_managed(
             &mut files,
@@ -1008,7 +1033,7 @@ mod library_tests {
         std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
         let files = Files {
             root: Some(dir.path().canonicalize().unwrap()),
-            opened: HashMap::new(),
+            ..Files::default()
         };
         assert!(library_path(&files, &display(&dir.path().join("escape"))).is_err());
     }
@@ -1113,7 +1138,7 @@ mod protection_lifecycle_tests {
         let root = dir.path().canonicalize().unwrap();
         let mut files = Files {
             root: Some(root.clone()),
-            opened: HashMap::new(),
+            ..Files::default()
         };
         let doc =
             create_managed(&mut files, &display(&root), "Private", "# Secret\n".into()).unwrap();
@@ -1317,5 +1342,197 @@ mod rename_tests {
             assert!(root.join("first.md").exists());
         }
         assert_eq!(fs::read_to_string(note.path).unwrap(), "first");
+    }
+}
+
+// Folder access is enforced at the native boundary, including direct path requests.
+fn private_root(files: &Files) -> AppResult<PathBuf> { Ok(root_path(files)?.join(".private")) }
+fn in_private(files: &Files, path: &Path) -> bool {
+    private_root(files).map(|root| path.starts_with(root)).unwrap_or(false)
+}
+fn check_private_access(files: &Files, path: &Path) -> AppResult<()> {
+    if in_private(files, path) {
+        if files.private_secret.is_none() { return Err("PRIVATE_LOCKED".into()); }
+        if path.file_name().map(|name| name.to_string_lossy().starts_with('.')).unwrap_or(false)
+            && path != private_root(files)? {
+            return Err("This private metadata is not a note.".into());
+        }
+    }
+    Ok(())
+}
+#[derive(Serialize)]
+struct PrivateStatus { path: String, configured: bool }
+fn ensure_private(files: &Files) -> AppResult<PrivateStatus> {
+    let root = private_root(files)?;
+    if fs::symlink_metadata(&root).map(|m| m.file_type().is_symlink() || !m.is_dir()).unwrap_or(false) {
+        return Err("The private folder must be a regular directory.".into());
+    }
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let marker = root.join(".password");
+    if fs::symlink_metadata(&marker).map(|m| m.file_type().is_symlink() || !m.is_file()).unwrap_or(false) {
+        return Err("Invalid private folder password file.".into());
+    }
+    Ok(PrivateStatus { path: display(&root), configured: marker.exists() })
+}
+#[tauri::command]
+fn private_status(state: State<'_, Mutex<Files>>) -> AppResult<PrivateStatus> {
+    ensure_private(&*state.lock().map_err(|e| e.to_string())?)
+}
+fn open_private(files: &mut Files, password: &str, setup: bool) -> AppResult<()> {
+    let status = ensure_private(files)?;
+    let marker = private_root(files)?.join(".password");
+    let secret = if setup {
+        if status.configured { return Err("The private folder already has a password.".into()); }
+        // Never replace a missing key for a folder that already contains notes.
+        if fs::read_dir(private_root(files)?).map_err(|e| e.to_string())?.next().is_some() {
+            return Err("The private folder password file is missing. Restore it from a backup.".into());
+        }
+        let (disk, secret) = protection::protect("text private folder v1", password)?;
+        atomic_bytes(&marker, &disk, true)?;
+        secret
+    } else {
+        if !status.configured { return Err("Set a private folder password first.".into()); }
+        let (content, secret) = protection::unlock(&read_disk(&marker)?, password)
+            .map_err(|_| "Incorrect private folder password, or the password file is damaged.".to_string())?;
+        if content.as_str() != "text private folder v1" { return Err("Invalid private folder password file.".into()); }
+        secret
+    };
+    files.private_secret = Some(secret);
+    Ok(())
+}
+#[tauri::command]
+async fn unlock_private(password: String, setup: bool, state: State<'_, Mutex<Files>>) -> AppResult<()> {
+    let password = Zeroizing::new(password);
+    open_private(&mut *state.lock().map_err(|e| e.to_string())?, &password, setup)
+}
+fn seal_private(files: &mut Files) {
+    if let Ok(root) = private_root(files) { files.opened.retain(|path, _| !path.starts_with(&root)); }
+    files.private_secret = None;
+}
+#[tauri::command]
+fn lock_private(state: State<'_, Mutex<Files>>) -> AppResult<()> {
+    seal_private(&mut *state.lock().map_err(|e| e.to_string())?);
+    Ok(())
+}
+fn privatize(files: &mut Files, source: &str, expected: &str) -> AppResult<Document> {
+    let path = library_path(files, source)?;
+    if in_private(files, &path) || !note(&path) { return Err("Choose a public note to move to Private.".into()); }
+    let secret = files.private_secret.as_ref().ok_or("PRIVATE_LOCKED")?.clone();
+    let session = files.opened.get(&path).ok_or("Open this note first.")?;
+    if session.content.as_str() != expected || read_disk(&path)?.as_slice() != session.disk.as_slice() {
+        return Err("This note changed. Reopen it before moving to Private.".into());
+    }
+    let target = private_root(files)?.join(path.file_name().ok_or("Missing name.")?).with_extension("textlock");
+    let content = Zeroizing::new(session.content.to_string());
+    let disk = protection::seal(&content, &secret)?;
+    atomic_bytes(&target, &disk, true)?;
+    if read_disk(&path)?.as_slice() != session.disk.as_slice() {
+        let _ = fs::remove_file(&target);
+        return Err("This note changed during the move. The original was retained.".into());
+    }
+    if let Err(error) = fs::remove_file(&path) {
+        let _ = fs::remove_file(&target);
+        return Err(error.to_string());
+    }
+    Ok(document(files, target, content, disk, Some(secret)))
+}
+#[tauri::command]
+fn move_to_private(path: String, expected: String, state: State<'_, Mutex<Files>>) -> AppResult<Document> {
+    let expected = Zeroizing::new(expected);
+    privatize(&mut *state.lock().map_err(|e| e.to_string())?, &path, &expected)
+}
+
+#[cfg(test)]
+mod private_tests {
+    use super::*;
+    fn fixture() -> (tempfile::TempDir, Files) {
+        let dir = tempfile::tempdir().unwrap();
+        let files = Files { root: Some(dir.path().canonicalize().unwrap()), ..Files::default() };
+        (dir, files)
+    }
+    #[test]
+    fn private_notes_are_encrypted_and_require_folder_authentication() {
+        let (_dir, mut files) = fixture();
+        let status = ensure_private(&files).unwrap();
+        assert!(!status.configured);
+        assert!(create_managed(&mut files, &status.path, "Hidden", "secret".into()).is_err());
+        open_private(&mut files, "folder password", true).unwrap();
+        let note = create_managed(&mut files, &status.path, "Hidden", "secret".into()).unwrap();
+        assert!(note.protected);
+        assert!(fs::read(&note.path).unwrap().starts_with(protection::MAGIC));
+        let path = PathBuf::from(note.path);
+        save_checked(&mut files, &path, "edited".into(), "secret".into()).unwrap();
+        seal_private(&mut files);
+        assert!(files.opened.is_empty());
+        assert!(load(&mut files, path.clone()).is_err());
+        assert!(inspect_entry(&files, &display(&path)).is_err());
+        assert!(library_path(&files, &status.path).is_err());
+        assert!(open_private(&mut files, "wrong", false).is_err());
+        assert!(files.private_secret.is_none());
+        open_private(&mut files, "folder password", false).unwrap();
+        assert_eq!(load(&mut files, path.clone()).unwrap().content, "edited");
+        assert!(unprotect_note(&mut files, &path).is_err());
+        assert!(library_path(&files, &display(&private_root(&files).unwrap().join(".password"))).is_err());
+    }
+    #[test]
+    fn moving_existing_notes_reencrypts_and_preserves_conflicts() {
+        let (_dir, mut files) = fixture();
+        let root = root_path(&files).unwrap();
+        let plain = create_managed(&mut files, &display(&root), "Personal", "private content".into()).unwrap();
+        open_private(&mut files, "folder", true).unwrap();
+        fs::write(&plain.path, "external").unwrap();
+        assert!(privatize(&mut files, &plain.path, "private content").is_err());
+        assert_eq!(fs::read_to_string(&plain.path).unwrap(), "external");
+        load(&mut files, PathBuf::from(&plain.path)).unwrap();
+        let protected = protect_note(&mut files, Path::new(&plain.path), "old password", "external").unwrap();
+        let moved = privatize(&mut files, &protected.path, "external").unwrap();
+        assert!(!Path::new(&protected.path).exists());
+        assert!(moved.protected);
+        seal_private(&mut files);
+        open_private(&mut files, "folder", false).unwrap();
+        assert_eq!(load(&mut files, PathBuf::from(&moved.path)).unwrap().content, "external");
+        assert!(move_managed(&mut files, &moved.path, &display(&root)).is_err());
+        let next = create_managed(&mut files, &display(&root), "Personal", "second".into()).unwrap();
+        assert!(privatize(&mut files, &next.path, "second").is_err());
+        assert_eq!(fs::read_to_string(&next.path).unwrap(), "second");
+    }
+    #[test]
+    fn private_folder_is_permanent_and_missing_keys_are_not_replaced() {
+        let (_dir, mut files) = fixture();
+        let root = root_path(&files).unwrap();
+        open_private(&mut files, "folder", true).unwrap();
+        let private = private_root(&files).unwrap();
+        assert!(rename_managed(&mut files, &display(&private), "Visible").is_err());
+        assert!(move_managed(&mut files, &display(&private), &display(&root)).is_err());
+        let note = create_managed(&mut files, &display(&private), "Hidden", "secret".into()).unwrap();
+        fs::remove_file(private.join(".password")).unwrap();
+        seal_private(&mut files);
+        assert!(open_private(&mut files, "replacement", true).is_err());
+        assert!(Path::new(&note.path).exists());
+    }
+    #[test]
+    fn locking_private_does_not_close_public_notes() {
+        let (_dir, mut files) = fixture();
+        open_private(&mut files, "folder", true).unwrap();
+        let root = root_path(&files).unwrap();
+        let note = create_managed(&mut files, &display(&root), "Public", "content".into()).unwrap();
+        seal_private(&mut files);
+        save_checked(&mut files, Path::new(&note.path), "edited".into(), "content".into()).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn rejects_private_directory_and_password_symlinks() {
+        use std::os::unix::fs::symlink;
+        let (_dir, files) = fixture();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let private = private_root(&files).unwrap();
+        symlink(elsewhere.path(), &private).unwrap();
+        assert!(ensure_private(&files).is_err());
+        fs::remove_file(&private).unwrap();
+        fs::create_dir(&private).unwrap();
+        fs::write(elsewhere.path().join("key"), "do not overwrite").unwrap();
+        symlink(elsewhere.path().join("key"), private.join(".password")).unwrap();
+        assert!(ensure_private(&files).is_err());
+        assert_eq!(fs::read_to_string(elsewhere.path().join("key")).unwrap(), "do not overwrite");
     }
 }

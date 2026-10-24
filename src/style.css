@@ -581,3 +581,14 @@ button:disabled {
 
 #open-latex-notation { margin-left: auto; margin-right: 12px; padding: 6px 8px; font-size: 11px; color: #aaa; }
 #open-latex-notation:hover { color: #ddd; }
+
+/* Apply immediately on focus loss, including modal dialogs and stale async renders. */
+.private-concealed #editor,
+.private-concealed #document-name,
+.private-concealed #dirty,
+.private-concealed dialog,
+.private-concealed #notice,
+.private-concealed #context-menu,
+.private-concealed [data-private="true"] { visibility: hidden !important; }
+#private-folder { margin-top: 8px; }
+#private-folder .chevron svg { width: 13px; height: 13px; transform: none; }

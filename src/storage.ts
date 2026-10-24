@@ -2,6 +2,10 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Storage, DocumentFile } from "./types";
 export const desktop = isTauri();
 const native: Storage = {
+  privateStatus: () => invoke("private_status"),
+  unlockPrivate: (password, setup) => invoke("unlock_private", { password, setup }),
+  lockPrivate: () => invoke("lock_private"),
+  moveToPrivate: (path, expected) => invoke("move_to_private", { path, expected }),
   library: () => invoke("library"),
   latexDefinitions: () => invoke("latex_definitions"),
   saveLatexDefinitions: (content, expected) => invoke("save_latex_definitions", { content, expected }),
@@ -58,6 +62,10 @@ function unique(parent: string, name: string, extension = "") {
   return path;
 }
 const browser: Storage = {
+  privateStatus: async () => { throw new Error("Private notes are available in the desktop app."); },
+  unlockPrivate: async () => { throw new Error("Private notes are available in the desktop app."); },
+  lockPrivate: async () => {},
+  moveToPrivate: async () => { throw new Error("Private notes are available in the desktop app."); },
   latexDefinitions: async () => "",
   saveLatexDefinitions: async () => { throw new Error("LaTeX notation settings are available in the desktop app."); },
   info: async (path) => {

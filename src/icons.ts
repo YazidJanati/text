@@ -1,4 +1,5 @@
 const paths: Record<string, string> = {
+  lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',
   folderPlus:
     '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/><path d="M12 10v6M9 13h6"/>',
   rename: '<path d="m15 4 5 5M4 20l5-1L21 7l-5-5L4 14Z"/>',

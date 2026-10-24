@@ -7,6 +7,7 @@ use zeroize::Zeroizing;
 
 pub const MAGIC: &[u8; 9] = b"TEXTLOCK\x01";
 const HEADER: usize = 9 + 16 + 24;
+#[derive(Clone)]
 pub struct Secret {
     key: Zeroizing<[u8; 32]>,
     salt: [u8; 16],
@@ -60,26 +61,22 @@ pub fn unlock(disk: &[u8], password: &str) -> Result<(Zeroizing<String>, Secret)
     }
     let salt: [u8; 16] = disk[9..25].try_into().map_err(|_| "Invalid salt.")?;
     let secret = derive(password, salt)?;
-    let cipher =
-        XChaCha20Poly1305::new_from_slice(secret.key.as_ref()).map_err(|e| e.to_string())?;
-    let bytes = Zeroizing::new(
-        cipher
-            .decrypt(
-                XNonce::from_slice(&disk[25..HEADER]),
-                Payload {
-                    msg: &disk[HEADER..],
-                    aad: &disk[..HEADER],
-                },
-            )
-            .map_err(|_| "Incorrect password, or this note has been damaged.".to_string())?,
-    );
-    let content = Zeroizing::new(
-        std::str::from_utf8(&bytes)
-            .map_err(|_| "Invalid note content.")?
-            .to_owned(),
-    );
+    let content = open(disk, &secret)?;
     Ok((content, secret))
 }
+// Private folder notes share the folder key, but every write has a fresh nonce.
+pub fn open(disk: &[u8], secret: &Secret) -> Result<Zeroizing<String>, String> {
+    if disk.len() < HEADER + 16 || !disk.starts_with(MAGIC) || disk[9..25] != secret.salt {
+        return Err("This private note is damaged or uses a different key.".into());
+    }
+    let cipher = XChaCha20Poly1305::new_from_slice(secret.key.as_ref()).map_err(|e| e.to_string())?;
+    let bytes = Zeroizing::new(cipher.decrypt(
+        XNonce::from_slice(&disk[25..HEADER]),
+        Payload { msg: &disk[HEADER..], aad: &disk[..HEADER] },
+    ).map_err(|_| "Incorrect password, or this note has been damaged.".to_string())?);
+    Ok(Zeroizing::new(std::str::from_utf8(&bytes).map_err(|_| "Invalid note content.")?.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

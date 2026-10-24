@@ -19,6 +19,10 @@ export interface EntryInfo extends Entry {
   modified: number | null;
 }
 export interface Storage {
+  privateStatus(): Promise<{ path: string; configured: boolean }>;
+  unlockPrivate(password: string, setup: boolean): Promise<void>;
+  lockPrivate(): Promise<void>;
+  moveToPrivate(path: string, expected: string): Promise<DocumentFile>;
   info(path: string): Promise<EntryInfo>;
   library(): Promise<Workspace>;
   latexDefinitions(): Promise<string>;
