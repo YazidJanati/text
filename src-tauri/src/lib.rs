@@ -19,6 +19,11 @@ fn quit(app: tauri::AppHandle, approved: State<'_, ExitApproved>) {
     approved.0.store(true, Ordering::SeqCst);
     app.exit(0);
 }
+#[tauri::command]
+fn restart_after_update(app: tauri::AppHandle, approved: State<'_, ExitApproved>) {
+    approved.0.store(true, Ordering::SeqCst);
+    app.restart();
+}
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 type AppResult<T> = Result<T, String>;
 struct Session {
@@ -444,6 +449,7 @@ async fn save_as(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(ExitApproved(AtomicBool::new(false)))
         .setup(|app| {
             let root = app.path().app_data_dir()?.join("library");
@@ -487,6 +493,7 @@ pub fn run() {
             trash_entry,
             import_file,
             quit,
+            restart_after_update,
             list_folder,
             entry_info,
             read_file,

@@ -1103,3 +1103,69 @@ test("insert cursor resizes without moving the caret or changing text", async ({
   await page.keyboard.type("Y");
   await expect(page.locator(".cm-content")).toHaveText("XYabc");
 });
+
+
+test("updates report current version and recover from check errors", async ({ page }) => {
+  await native(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+      if (command === "plugin:updater|check") {
+        if (w.failUpdateCheck) return Promise.reject("Network unavailable");
+        return Promise.resolve(null);
+      }
+      return original(command, args);
+    };
+  });
+  await page.getByRole("button", { name: "Updates", exact: true }).click();
+  await expect(page.locator("#update-status")).toHaveText("You’re up to date.");
+  await page.locator("#update-close").click();
+  await page.evaluate(() => { (window as any).failUpdateCheck = true; });
+  await page.locator("#check-updates").click();
+  await expect(page.locator("#update-status")).toContainText("Network unavailable");
+  await expect(page.locator("#update-close")).toBeEnabled();
+});
+
+async function availableUpdate(page: Page, failSave = false) {
+  await native(page);
+  await page.evaluate(({ failSave }) => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    w.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+      if (command === "plugin:updater|check") return Promise.resolve({
+        rid: 42, version: "0.1.8", currentVersion: "0.1.7", body: "<script>untrusted</script>",
+      });
+      if (command === "save_file" && failSave) return Promise.reject("Disk unavailable");
+      return original(command, args);
+    };
+  }, { failSave });
+}
+
+test("update installs only on request after saving and then restarts", async ({ page }) => {
+  await availableUpdate(page);
+  await replace(page, "Saved before update");
+  await page.locator("#check-updates").click();
+  await expect(page.locator("#update-status")).toContainText("0.1.8");
+  await expect(page.locator("#update-notes")).toHaveText("<script>untrusted</script>");
+  expect(await page.evaluate(() => (window as any).calls.some((c: any) => c.command === "plugin:updater|download_and_install"))).toBe(false);
+  await page.locator("#update-install").click();
+  await expect.poll(() => page.evaluate(() => (window as any).calls.some((c: any) => c.command === "restart_after_update"))).toBe(true);
+  const commands = await page.evaluate(() => (window as any).calls.map((c: any) => c.command));
+  expect(commands.indexOf("save_file")).toBeLessThan(commands.indexOf("plugin:updater|download_and_install"));
+  expect(commands.indexOf("plugin:updater|download_and_install")).toBeLessThan(commands.indexOf("restart_after_update"));
+});
+
+test("update does not install if saving the current note fails", async ({ page }) => {
+  await availableUpdate(page, true);
+  await replace(page, "Keep my unsaved note");
+  await page.locator("#check-updates").click();
+  await page.locator("#update-install").click();
+  await expect(page.locator("#update-status")).toContainText("Couldn’t save your note");
+  expect(await page.evaluate(() => (window as any).calls.some((c: any) => c.command === "plugin:updater|download_and_install" || c.command === "restart_after_update"))).toBe(false);
+});
+
+test("browser preview hides desktop updates", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#check-updates")).toBeHidden();
+});

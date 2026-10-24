@@ -554,3 +554,14 @@ button:disabled {
   cursor: default;
   opacity: 0.5;
 }
+
+#check-updates {
+  font-size: 11px;
+  color: #aaa;
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin: 0 10px 12px;
+  padding: 6px 8px;
+}
+#check-updates:hover { color: #ddd; }
+#update-notes { white-space: pre-wrap; max-height: 35vh; overflow: auto; font: inherit; }

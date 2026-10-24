@@ -135,3 +135,21 @@ The browser tests exercise the real editor and a controlled native bridge, inclu
 - `tests/`: Playwright checks.
 
 Tauri 2 uses the system webview. The UI uses vanilla TypeScript and Vite, without a UI framework. Dependency versions are locked in `package-lock.json` and `src-tauri/Cargo.lock`. Third-party notices are in `THIRD_PARTY_NOTICES.txt`.
+
+## In-app updates and releases
+
+Desktop users can click **Updates**, then **Update and restart**. Checks happen only on request. The app saves the current note and blocks editing during installation; a save failure blocks the update. Downloads are verified with Tauri updater signatures. Browser preview hides this control.
+
+Existing 0.1.7 installations do not contain an updater: users must manually install the first update-enabled release once. A source push alone does not update installed apps; publish a higher versioned release.
+
+One-time repository setup (maintainer):
+
+1. Generate a signing key outside the repository with `npm run tauri -- signer generate -w /secure/location/text-updater.key`. Back up the private key and its password securely; keep using this same key for future releases.
+2. In GitHub repository Settings → Secrets and variables → Actions, add the private key contents as secret `TAURI_SIGNING_PRIVATE_KEY`, its password as secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and the public `.pub` file contents as variable `TAURI_UPDATER_PUBLIC_KEY`. Never commit the private key. The checked-in configuration contains only the public verification key, so local builds can also check signed updates. Keep the GitHub variable and checked-in public key identical.
+3. For each release, bump `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` to the same new version (the first update-enabled release is 0.1.8) and regenerate both lockfiles (`npm install --package-lock-only` and `cargo check --manifest-path src-tauri/Cargo.toml`). Commit, push, and push the matching tag (for example `v0.1.8`).
+4. The release workflow builds Apple Silicon/Intel macOS, Windows NSIS, and Linux AppImage/deb artifacts, signatures, and a combined `latest.json` in a **draft** GitHub release. After all matrix builds succeed, inspect and publish the draft. Sequential builds prevent concurrent updater-manifest edits. Keep the release public so installed apps can download without credentials.
+5. For each subsequent release, increase the same versions and push the matching `vX.Y.Z` tag. Publish the completed draft to make it available via Updates. Linux in-app updates require the AppImage distribution; deb users use their installer/package manager.
+
+Updater signatures are separate from operating-system signing. This workflow does not configure Apple Developer signing/notarization or Windows code signing; configure those before distributing builds that require them. Install the Mac app in a writable location such as Applications before updating.
+
+Reference: https://v2.tauri.app/plugin/updater/

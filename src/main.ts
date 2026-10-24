@@ -1,3 +1,4 @@
+import { setupUpdates } from "./updates";
 import { Vim, toggleVim, observeVim, vimEnabled } from "./vim";
 import "./style.css";
 import { invoke } from "@tauri-apps/api/core";
@@ -37,7 +38,7 @@ const shortcuts = [
   ]),
 ].join("");
 document.querySelector("#app")!.innerHTML = `
-<aside id="sidebar" aria-label="Notes"><div class="sidebar-heading"><span>text</span><div>${tool("new-folder", "folderPlus", "New folder", mod + "⇧N")}${tool("new-note", "plus", "New note", mod + "N")}</div></div><nav id="files" aria-label="Files"></nav></aside>
+<aside id="sidebar" aria-label="Notes"><div class="sidebar-heading"><span>text</span><div>${tool("new-folder", "folderPlus", "New folder", mod + "⇧N")}${tool("new-note", "plus", "New note", mod + "N")}</div></div><nav id="files" aria-label="Files"></nav><button id="check-updates" type="button" hidden>Updates</button></aside>
 <main><header>${tool("toggle-sidebar", "sidebar", "Toggle sidebar", mod + "B")}<button id="document-name" title="Rename (F2)"></button><span id="dirty" hidden aria-label="Unsaved changes"></span><span id="vim-mode" role="status" aria-label="Vim mode"></span><button id="vim-toggle" type="button"></button></header><div id="editor"></div></main>
 <div id="notice" role="alert" hidden><span></span><button aria-label="Dismiss">×</button></div>
 <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts">×</button></div><div class="shortcut-groups">${shortcuts}</div><p class="shortcut-commands"><code>:w</code> save · <code>:q</code> quit · <code>:wq</code> save &amp; quit<br><code>:new Name</code> new note · <code>:mkdir Name</code> new folder</p><p class="shortcut-footnote">Drag items onto a folder to move them; drop into empty sidebar space for the top level.<br>F1 opens this reference · Esc closes it.</p></dialog>
@@ -1056,3 +1057,5 @@ void action(async () => {
   ready = true;
   await renderFiles();
 });
+
+setupUpdates({ desktop, button: $<HTMLButtonElement>("check-updates"), run: (task) => action(task), save: flush });
