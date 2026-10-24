@@ -146,7 +146,11 @@ function changed() {
   clearTimeout(saveTimer);
   if (ready && path && dirty()) saveTimer = setTimeout(() => void flush(), 500);
 }
-function setDocument(file: DocumentFile) {
+async function setDocument(file: DocumentFile) {
+  // All routes into a public note (open, create, import, or password actions)
+  // must conceal the private tree and drop its key before showing that note.
+  if (!isPrivate(file.path) && privateUnlocked && !privateLockPromise)
+    await lockPrivateOnLeave();
   if (currentProtected || file.protected) Vim.resetVimGlobalState_();
   clearTimeout(saveTimer);
   $("notice").hidden = true;
@@ -357,6 +361,10 @@ function clearDocument() {
 }
 async function closeCurrent() {
   if (!path || !(await canLeave())) return;
+  if (isPrivate(path) && privateUnlocked) {
+    await lockPrivateOnLeave();
+    return;
+  }
   await storage.closeNote();
   clearDocument();
   await renderFiles();
@@ -366,7 +374,7 @@ async function protectEntry(entry: Entry, remove = false) {
   if (path !== entry.path) {
     const file = await readDocument(entry.path);
     if (!file) return;
-    setDocument(file);
+    await setDocument(file);
     await renderFiles();
   }
   const result = remove
@@ -375,7 +383,7 @@ async function protectEntry(entry: Entry, remove = false) {
         storage.setPassword(path!, password, diskContent),
       );
   if (result) {
-    setDocument(result);
+    await setDocument(result);
     treeFocusedPath = result.path;
     await renderFiles();
   }
@@ -463,7 +471,7 @@ function parent() {
 async function newNote() {
   if (!ready || !(await canLeave())) return;
   const note = await storage.createNote(parent());
-  setDocument(note);
+  await setDocument(note);
   await renderFiles();
 }
 async function newFolder() {
@@ -480,7 +488,7 @@ async function openNote(target: string) {
   if (target === path || !(await canLeave())) return;
   const file = await readDocument(target);
   if (!file) return;
-  setDocument(file);
+  await setDocument(file);
   await renderFiles();
 }
 async function renameEntry(entry: Entry) {
@@ -553,12 +561,12 @@ async function trashEntry(entry: Entry) {
     const first = await firstNote(workspace!.path);
     if (first) {
       try {
-        setDocument(await storage.readFile(first));
+        await setDocument(await storage.readFile(first));
       } catch (error) {
         if (String(error).includes("PASSWORD_REQUIRED")) clearDocument();
         else throw error;
       }
-    } else setDocument(await storage.createNote(workspace!.path));
+    } else await setDocument(await storage.createNote(workspace!.path));
   }
   await renderFiles();
 }
@@ -889,7 +897,7 @@ Vim.defineEx("wq", "wq", quit);
 Vim.defineEx("new", "new", (_cm, params) => {
   void action(async () => {
     if (await canLeave()) {
-      setDocument(
+      await setDocument(
         await storage.createNote(
           parent(),
           params.argString?.trim() || "Untitled",
@@ -935,14 +943,14 @@ $("move-private").onclick = () => {
   const entry = context;
   if (entry) void action(async () => {
     if (!(await canLeave())) return;
-    if (!privateUnlocked && !(await unlockPrivateFolder(false))) return;
     if (path !== entry.path) {
       const file = await readDocument(entry.path);
       if (!file) return;
-      setDocument(file);
+      await setDocument(file);
     }
+    if (!privateUnlocked && !(await unlockPrivateFolder(false))) return;
     const result = await storage.moveToPrivate(entry.path, diskContent);
-    setDocument(result);
+    await setDocument(result);
     lastPrivateNote = result.path;
     expanded.add(privatePath!);
     await renderFiles();
@@ -1037,7 +1045,7 @@ document.addEventListener(
         if (await canLeave()) {
           const file = await storage.importFile(parent());
           if (file) {
-            setDocument(file);
+            await setDocument(file);
             await renderFiles();
           }
         }
@@ -1148,7 +1156,7 @@ void action(async () => {
       }
     } else initial = await storage.createNote(workspace.path);
   }
-  setDocument(initial);
+  await setDocument(initial);
   let ancestor = selectedFolder;
   while (
     ancestor &&
@@ -1195,18 +1203,26 @@ async function unlockPrivateFolder(restore = true): Promise<boolean> {
       }
       if (privateDraft) {
         const draft = privateDraft;
-        setDocument({ path: target, content: draft.content, protected: true });
+        await setDocument({ path: target, content: draft.content, protected: true });
         diskContent = draft.expected;
         savedContent = draft.saved;
         privateDraft = null;
         notice("Your unsaved private edits were restored. Save or export a copy before leaving this note.");
         updateStatus();
-      } else if (file) setDocument(file);
+      } else if (file) await setDocument(file);
     }
     return true;
   } finally { privateAuthenticating = false; }
 }
 function concealPrivate() {
+  beginPrivateLock(true);
+}
+async function lockPrivateOnLeave() {
+  // This runs inside the current action, so it must not wait for that action.
+  beginPrivateLock(false);
+  await privateLockPromise;
+}
+function beginPrivateLock(waitForAction: boolean) {
   if (!ready) return;
   if (!privateUnlocked && !privateAuthenticating && !isPrivate(path)) {
     void flush();
@@ -1239,7 +1255,7 @@ function concealPrivate() {
   }
   document.title = "text";
   if (desktop) import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTitle("text")).catch(() => {});
-  const pendingAction = actionDone;
+  const pendingAction = waitForAction ? actionDone : null;
   privateLockPromise = (async () => {
     if (pendingAction) await pendingAction;
     const privateNote = isPrivate(path);

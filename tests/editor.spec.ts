@@ -1551,3 +1551,70 @@ test("a hidden unsaved draft remains exportable if the original file disappears"
   await page.locator('#export-warning button[value="export"]').click();
   expect(await page.evaluate(() => (window as any).calls.some((c: any) => c.command === "save_as" && c.args.content === "Recoverable draft"))).toBe(true);
 });
+
+
+test("opening a public note closes Private and conceals its titles until reauthentication", async ({ page }) => {
+  await privateNote(page);
+  await replace(page, "Latest private edits");
+  await fileRow(page, "/notes/Untitled.md").click();
+  await expect(page.locator("#document-name")).toHaveText("Untitled");
+  await expect(page.locator("#editor")).toBeVisible();
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  await expect(page.locator("#private-folder")).toHaveAttribute("aria-expanded", "false");
+  expect(await page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  expect(await page.evaluate(() => (window as any).testProtected["/notes/.private/Secret title.textlock"].content)).toBe("Latest private edits");
+  await page.locator("#private-folder").click();
+  await expect(page.locator("#password-heading")).toHaveText("Unlock Private");
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  await page.locator("#password-input").fill("folder password");
+  await page.locator("#password-submit").click();
+  await expect(page.locator(".cm-content")).toHaveText("Latest private edits");
+});
+test("closing a private note also locks the folder and hides all its titles", async ({ page }) => {
+  await privateNote(page);
+  await page.keyboard.press("Control+w");
+  await expect(page.locator("#editor")).toBeHidden();
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  expect(await page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  await unlockPrivate(page);
+  await expect(page.locator(".cm-content")).toHaveText("Secret content");
+});
+test("creating and importing public notes both lock Private", async ({ page }) => {
+  await privateNote(page);
+  await page.evaluate(() => document.getElementById("files")!.click());
+  await page.locator("#new-note").click();
+  await expect(page.locator("#document-name")).toHaveText("Untitled 2");
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  expect(await page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+  await unlockPrivate(page);
+  await page.evaluate(() => document.getElementById("files")!.click());
+  await page.keyboard.press(`${mod}+o`);
+  await expect(page.locator("#document-name")).toHaveText("imported");
+  await expect(page.locator("#files")).not.toContainText("Secret title");
+  expect(await page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+});
+test("a failed private save blocks switching to a public note without losing edits", async ({ page }) => {
+  await privateNote(page);
+  await page.evaluate(() => { (window as any).failPrivateSave = true; });
+  await replace(page, "Keep these private edits");
+  await fileRow(page, "/notes/Untitled.md").click();
+  await expect(page.locator("#unsaved")).toBeVisible();
+  await page.locator('#unsaved button[value="cancel"]').click();
+  await expect(page.locator("#document-name")).toHaveText("Secret title");
+  await expect(page.locator(".cm-content")).toHaveText("Keep these private edits");
+  expect(await page.evaluate(() => (window as any).privateUnlocked)).toBe(true);
+});
+
+test("Move to Private also works for a note that is not currently open", async ({ page }) => {
+  await native(page, { "/notes/Untitled.md": "Current note", "/notes/Other.md": "Move this note" });
+  await fileRow(page, "/notes/Untitled.md").click();
+  await fileRow(page, "/notes/Other.md").click({ button: "right" });
+  await page.locator("#move-private").click();
+  await page.locator("#password-input").fill("folder password");
+  await page.locator("#password-confirm").fill("folder password");
+  await page.locator("#password-submit").click();
+  await expect(page.locator(".cm-content")).toHaveText("Move this note");
+  expect(await disk(page, "/notes/Other.md")).toBeUndefined();
+  expect(await disk(page, "/notes/.private/Other.textlock")).toBe("encrypted");
+  expect(await page.evaluate(() => (window as any).privateUnlocked)).toBe(true);
+});
