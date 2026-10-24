@@ -82,7 +82,7 @@ export interface MathRange {
 export function mathRanges(state: EditorState): MathRange[] {
   const text = state.doc.toString(),
     result: MathRange[] = [];
-  const excluded: { from: number; to: number }[] = [];
+  const excluded: { from: number; to: number; link: boolean }[] = [];
   syntaxTree(state).iterate({
     enter(node) {
       if (
@@ -96,7 +96,11 @@ export function mathRanges(state: EditorState): MathRange[] {
           "Image",
         ].includes(node.name)
       ) {
-        excluded.push({ from: node.from, to: node.to });
+        excluded.push({
+          from: node.from,
+          to: node.to,
+          link: node.name === "Link" || node.name === "Image",
+        });
         return false;
       }
     },
@@ -106,7 +110,12 @@ export function mathRanges(state: EditorState): MathRange[] {
   for (const match of text.matchAll(pattern)) {
     const from = match.index!,
       to = from + match[0].length;
-    if (excluded.some((range) => from < range.to && to > range.from)) continue;
+    // Brackets inside math can be parsed as Markdown links (for example E[X]).
+    // Math owns those brackets; a surrounding link or image still stays literal.
+    if (excluded.some((range) =>
+      from < range.to && to > range.from &&
+      !(range.link && from <= range.from && to >= range.to),
+    )) continue;
     const display = match[1] !== undefined;
     // Multiline display math occupies its own lines; avoid consuming adjacent prose.
     if (

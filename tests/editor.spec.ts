@@ -394,6 +394,40 @@ test("inline and display math render, click reveals source, and Markdown stays i
   await expect(page.locator(".cm-content")).toContainText("\\int_0^1");
 });
 
+test("square brackets in math take precedence over Markdown links", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await native(page);
+  await replace(page, "$E[X]$");
+  await expect(page.locator(".math-inline")).toHaveCount(0);
+  await expect(page.locator(".md-link")).toHaveCount(0);
+  await page.keyboard.type(" ");
+  await expect(page.locator('.math-inline[aria-label="E[X]"] .katex')).toHaveCount(1);
+  await page.locator(".math-inline").click();
+  await expect(page.locator(".math-inline")).toHaveCount(0);
+  await expect(page.locator(".cm-content")).toHaveText("$E[X]$ ");
+  await expect(page.locator(".md-link")).toHaveCount(0);
+
+  const source = "$E[X]$ and $E[X^2]$ with [a link](https://example.com).\n\n$$\nE[X] = \\sum_{x \\in [0,1]} x p(x)\n$$\n\n[X]: https://example.com\n\n";
+  await replace(page, source);
+  await expect(page.locator(".math-inline .katex")).toHaveCount(2);
+  await expect(page.locator(".math-block .katex")).toHaveCount(1);
+  await expect(page.locator(".katex-error")).toHaveCount(0);
+  await expect(page.locator(".md-link")).toHaveText("a link");
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe(source);
+  expect(errors).toEqual([]);
+});
+
+test("dollars inside real links, images, code and HTML remain literal", async ({ page }) => {
+  const source = "[$x$](https://example.com)\n\n![alt $E[X]$](image.png)\n\n[label](https://example.com/$E[X]$)\n\n`$E[X]$`\n\n```tex\n$E[X]$\n```\n\n<span title=\"$E[X]$\">literal</span>\n\n";
+  await native(page);
+  await replace(page, source);
+  await expect(page.locator(".katex")).toHaveCount(0);
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe(source);
+});
+
 test("code and escaped dollars are not math; document HTML never executes", async ({
   page,
 }) => {

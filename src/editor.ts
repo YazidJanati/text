@@ -88,7 +88,8 @@ class Checkbox extends WidgetType {
 }
 export function previewDecorations(view: EditorView): DecorationSet {
   const ranges: ReturnType<Decoration["range"]>[] = [],
-    state = view.state;
+    state = view.state,
+    math = state.field(mathPreview).ranges;
   const active = (from: number, to: number) =>
     state.selection.ranges.some(
       (range) =>
@@ -106,8 +107,12 @@ export function previewDecorations(view: EditorView): DecorationSet {
       from: visible.from,
       to: visible.to,
       enter(node) {
-        const { name, from, to } = node,
-          editing = active(from, to);
+        const { name, from, to } = node;
+        // Keep Markdown styling and hidden markers out of LaTeX, even while
+        // its source is visible for editing.
+        if (math.some((range) => from >= range.from && to <= range.to))
+          return false;
+        const editing = active(from, to);
         if (/^(ATXHeading[1-6]|SetextHeading[12])$/.test(name))
           ranges.push(
             Decoration.line({ class: `md-heading md-h${name.at(-1)}` }).range(
