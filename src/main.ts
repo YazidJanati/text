@@ -1,3 +1,4 @@
+import { setupNoteSwitcher } from "./note-switcher";
 import { setupLatexNotation } from "./latex-notation";
 import { setMathDefinitions } from "./math";
 import { setupUpdates } from "./updates";
@@ -18,6 +19,7 @@ const shortcutGroup = (title: string, rows: [string, string][]) =>
 const shortcuts = [
   shortcutGroup("Notes", [
     ["New note", mod + "N"], ["New folder", mod + "Shift+N"],
+    ["Switch notes in this folder", "Ctrl+Tab"],
     ["Save", mod + "S"], ["Close note", mod === "⌘" ? "⌘W / Ctrl+W" : "Ctrl+W"],
     ["Import Markdown", mod + "O"], ["Export Markdown", mod + "Shift+S"],
   ]),
@@ -44,6 +46,7 @@ document.querySelector("#app")!.innerHTML = `
 <main><header>${tool("toggle-sidebar", "sidebar", "Toggle sidebar", mod + "B")}<button id="document-name" title="Rename (F2)"></button><span id="dirty" hidden aria-label="Unsaved changes"></span><span id="vim-mode" role="status" aria-label="Vim mode"></span><button id="vim-toggle" type="button"></button></header><div id="editor"></div></main>
 <div id="notice" role="alert" hidden><span></span><button aria-label="Dismiss">×</button></div>
 <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><div class="shortcuts-heading"><h2 id="shortcuts-title">Keyboard shortcuts</h2><button id="open-latex-notation" type="button" hidden>LaTeX notation…</button><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts">×</button></div><div class="shortcut-groups">${shortcuts}</div><p class="shortcut-commands"><code>:w</code> save · <code>:q</code> quit · <code>:wq</code> save &amp; quit<br><code>:new Name</code> new note · <code>:mkdir Name</code> new folder</p><p class="shortcut-footnote">Drag items onto a folder to move them; drop into empty sidebar space for the top level.<br>F1 opens this reference · Esc closes it.</p></dialog>
+<dialog id="about-dialog" aria-labelledby="about-title"><div class="shortcuts-heading"><h2 id="about-title">text</h2><button id="close-about" class="icon-button" aria-label="Close About">×</button></div><p id="about-description">codex is so cool, a simple text app by Yaz</p><p id="about-version"></p></dialog>
 <dialog id="info-dialog" aria-labelledby="info-title"><div class="shortcuts-heading"><h2 id="info-title">Get Info</h2><button id="close-info" class="icon-button" aria-label="Close info">×</button></div><p id="info-name"></p><dl id="info-details"></dl></dialog>
 <dialog id="name-dialog"><form><label id="name-label" for="name-input"></label><input id="name-input" autocomplete="off" maxlength="120" required><div class="dialog-actions"><button type="button" id="name-cancel">Cancel</button><button type="submit" id="name-submit">Create</button></div></form></dialog>
 <dialog id="unsaved"><form><p>Couldn’t save this note.</p><div class="dialog-actions"><button value="cancel">Cancel</button><button value="discard">Discard</button><button value="export">Export copy</button></div></form></dialog>
@@ -81,6 +84,15 @@ let inlineRename: { commit: () => void; cancel: () => void } | null = null;
 let queuedInlineAction: { task: () => Promise<void>; after?: () => void; entry?: Entry } | null = null;
 const isPrivate = (candidate: string | null) => !!privatePath && within(candidate, privatePath);
 const editor = createEditor($("editor"), "", changed);
+const noteSwitcher = setupNoteSwitcher({
+  enabled: () => ready && !busy && !privateConcealed && !privateLockPromise,
+  current: () => path,
+  load: () => {
+    const folder = path ? path.slice(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))) : parent();
+    return storage.listFolder(folder);
+  },
+  open: (target) => action(() => openNote(target)),
+});
 const showLatexNotation = setupLatexNotation({
   storage,
   apply: applyMathDefinitions,
@@ -952,6 +964,17 @@ const rememberedSize = Number(recalled("text-size"));
 if (Number.isInteger(rememberedSize) && rememberedSize >= 9 && rememberedSize <= 32)
   zoomText(rememberedSize - 13);
 let shortcutsFocus: HTMLElement | null = null;
+async function showAbout() {
+  if (document.querySelector("dialog[open]")) return;
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    const version = await getVersion();
+    if (document.querySelector("dialog[open]")) return;
+    $("about-version").textContent = `Version ${version}`;
+    $<HTMLDialogElement>("about-dialog").showModal();
+  } catch (error) { notice(error); }
+}
+$("close-about").onclick = () => $<HTMLDialogElement>("about-dialog").close();
 function showShortcuts() {
   if (inlineRename || document.querySelector("dialog[open]")) return;
   shortcutsFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1211,6 +1234,7 @@ if (desktop) {
         if (!document.querySelector("dialog[open]")) void action(closeCurrent);
       });
       await listen("show-shortcuts", showShortcuts);
+      await listen("show-about", () => { void showAbout(); });
       await listen("edit-latex-notation", () => { if (!busy) void showLatexNotation(); });
       await listen<number>("text-size", (event) => zoomText(event.payload));
     })
@@ -1337,6 +1361,7 @@ async function lockPrivateOnLeave() {
 }
 function beginPrivateLock(waitForAction: boolean) {
   if (!ready) return;
+  noteSwitcher.close(false);
   if (!privateUnlocked && !privateAuthenticating && !isPrivate(path)) {
     void flush();
     return;

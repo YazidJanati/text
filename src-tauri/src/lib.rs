@@ -481,6 +481,9 @@ pub fn run() {
             "latex-notation" => {
                 let _ = app.emit("edit-latex-notation", ());
             }
+            "about-text" => {
+                let _ = app.emit("show-about", ());
+            }
             "shortcuts" => {
                 let _ = app.emit("show-shortcuts", ());
             }
@@ -1050,7 +1053,7 @@ fn native_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
                 "text",
                 true,
                 &[
-                    &PredefinedMenuItem::about(app, None, None)?,
+                    &MenuItem::with_id(app, "about-text", "About text", true, None::<&str>)?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::services(app, None)?,
                     &PredefinedMenuItem::separator(app)?,

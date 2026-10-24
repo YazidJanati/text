@@ -607,3 +607,17 @@ button:disabled {
 }
 .rename-input:focus-visible { outline: none; }
 .rename-input[aria-invalid="true"] { border-color: #d77; }
+
+#note-switcher { width: 500px; max-height: min(560px, 85dvh); padding: 20px; }
+#note-switcher-title { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
+#note-switcher-query { margin-bottom: 10px; }
+#note-switcher-results { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; }
+#note-switcher-results li { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 9px 10px; cursor: pointer; }
+#note-switcher-results li > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#note-switcher-results li[aria-selected="true"] { background: #343434; color: #eee; }
+#note-switcher-results li:hover { background: #2b2b2b; }
+.note-switcher-badge { color: #999; font-size: 10px; flex-shrink: 0; }
+#note-switcher-status, .note-switcher-hint { color: #999; font-size: 11px; margin: 12px 0 0; }
+
+#about-description { margin: 0 0 14px; }
+#about-version { color: #999; margin-bottom: 0; }

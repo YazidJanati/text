@@ -168,3 +168,7 @@ One-time repository setup (maintainer):
 Updater signatures are separate from operating-system signing. This workflow does not configure Apple Developer signing/notarization or Windows code signing; configure those before distributing builds that require them. Install the Mac app in a writable location such as Applications before updating.
 
 Reference: https://v2.tauri.app/plugin/updater/
+
+## Switch between notes in a folder
+
+Press **Ctrl+Tab** (Control on Mac, not Command) to open the note switcher. It lists only notes alongside the current note, including password-protected notes; folders and their contents are excluded. With no note open, it uses the selected folder. The next note is highlighted initially. Press **Tab** to cycle forward, **Shift+Tab** to cycle backward, or use the arrow keys. Type a note name to filter the list (exact matches come first), then press **Enter** or click a result to open it. **Esc** cancels. Switching uses the normal save and password checks; locked notes are not unlocked just by listing them. Private note names are cleared from the picker immediately when Private locks.

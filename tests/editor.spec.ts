@@ -50,6 +50,7 @@ async function native(
             listeners.set(args.event, args.handler);
             return args.handler;
           }
+          if (command === "plugin:app|version") return "0.1.11";
           if (command === "library") return { path: "/notes", name: "notes" };
           if (command === "latex_definitions") return w.testFiles["/notes/def.tex"] || "";
           if (command === "save_latex_definitions") {
@@ -272,6 +273,7 @@ async function native(
       w.fireLatexNotation = () => callbacks.get(listeners.get("edit-latex-notation"))?.({
         event: "edit-latex-notation", payload: null,
       });
+      w.fireAbout = () => callbacks.get(listeners.get("show-about"))?.({ event: "show-about", payload: null });
       w.fireShortcuts = () => callbacks.get(listeners.get("show-shortcuts"))?.({
         event: "show-shortcuts", payload: null,
       });
@@ -1686,4 +1688,156 @@ test("renaming from the title reveals a hidden sidebar and edits the name there"
   await input.fill("From title");
   await input.press("Enter");
   await expect(page.locator("#document-name")).toHaveText("From title");
+});
+
+async function switchNotes(page: Page) {
+  await page.keyboard.press("Control+Tab");
+  await expect(page.locator("#note-switcher")).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Search notes in this folder" })).toBeFocused();
+  await expect(page.locator('#note-switcher-results [aria-selected="true"]')).toHaveCount(1);
+}
+
+test("Ctrl+Tab cycles sibling notes in Vim with Tab, reverse Tab and Enter", async ({ page }) => {
+  await native(page, { "/notes/Alpha.md": "A", "/notes/Beta.md": "B", "/notes/Gamma.md": "G" });
+  const selected = page.locator('#note-switcher-results [aria-selected="true"]');
+  await switchNotes(page);
+  await expect(selected).toContainText("Beta");
+  await page.keyboard.press("Control+Tab");
+  await expect(selected).toContainText("Gamma");
+  await page.keyboard.press("Tab");
+  await expect(selected).toContainText("Alpha");
+  await page.keyboard.press("Shift+Tab");
+  await expect(selected).toContainText("Gamma");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#document-name")).toHaveText("Gamma");
+  await expect(page.locator(".cm-content")).toHaveText("G");
+  await expect(page.locator("#note-switcher")).not.toBeVisible();
+  await switchNotes(page);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#document-name")).toHaveText("Gamma");
+  await expect(page.locator(".cm-content")).toBeFocused();
+});
+
+test("note switcher filters names, prioritizes exact matches and handles no results", async ({ page }) => {
+  await native(page, { "/notes/First.md": "first", "/notes/Chapter.md": "chapter", "/notes/Chapter extra.md": "extra" });
+  await switchNotes(page);
+  const query = page.getByRole("combobox", { name: "Search notes in this folder" });
+  await query.fill("CHAPTER");
+  await expect(page.locator("#note-switcher-results [role=option]")).toHaveCount(2);
+  await expect(page.locator('#note-switcher-results [aria-selected="true"]')).toContainText("Chapter");
+  await query.fill("no such note");
+  await expect(page.locator("#note-switcher-status")).toHaveText("No matching notes in this folder.");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#note-switcher")).toBeVisible();
+  await query.fill("chapter.md");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#document-name")).toHaveText("Chapter");
+});
+
+test("note switcher stays in the current folder and excludes subfolders", async ({ page }) => {
+  await native(page, {
+    "/notes/Alpha.md": "root", "/notes/Beta.md": "root too", "/notes/Folder": null,
+    "/notes/Folder/Nested.md": "nested", "/notes/Folder/Second.md": "second",
+    "/notes/Folder/Deeper": null, "/notes/Folder/Deeper/Deep.md": "deep",
+  });
+  await switchNotes(page);
+  await expect(page.locator("#note-switcher-results [role=option]")).toHaveCount(2);
+  await expect(page.locator("#note-switcher-results")).not.toContainText("Nested");
+  await page.keyboard.press("Escape");
+  await fileRow(page, "/notes/Folder").click();
+  await fileRow(page, "/notes/Folder/Nested.md").click();
+  await switchNotes(page);
+  await expect(page.locator("#note-switcher-results [role=option]")).toHaveCount(2);
+  await expect(page.locator("#note-switcher-results")).toContainText("Second");
+  await expect(page.locator("#note-switcher-results")).not.toContainText("Alpha");
+  await expect(page.locator("#note-switcher-results")).not.toContainText("Deep");
+  await page.getByRole("option", { name: "Second", exact: true }).click();
+  await expect(page.locator("#document-name")).toHaveText("Second");
+});
+
+test("note switcher saves edits and honors save conflicts before opening", async ({ page }) => {
+  await native(page, { "/notes/Alpha.md": "A", "/notes/Beta.md": "B" });
+  await replace(page, "saved edits");
+  await switchNotes(page);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#document-name")).toHaveText("Beta");
+  expect(await disk(page, "/notes/Alpha.md")).toBe("saved edits");
+  await page.evaluate(() => { (window as any).testFiles["/notes/Beta.md"] = "external"; });
+  await replace(page, "unsaved edits");
+  await switchNotes(page);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#unsaved")).toBeVisible();
+  await page.locator('#unsaved button[value="cancel"]').click();
+  await expect(page.locator("#document-name")).toHaveText("Beta");
+  await expect(page.locator(".cm-content")).toHaveText("unsaved edits");
+  expect(await disk(page, "/notes/Beta.md")).toBe("external");
+});
+
+test("note switcher requests passwords only after choosing a locked note", async ({ page }) => {
+  await native(page, { "/notes/Alpha.md": "A", "/notes/Locked.textlock": "encrypted" });
+  await page.evaluate(() => { (window as any).testProtected["/notes/Locked.textlock"] = { content: "secret", password: "password" }; });
+  await switchNotes(page);
+  await expect(page.locator("#note-switcher-results")).toContainText("Locked");
+  await expect(page.locator("#password-dialog")).not.toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#password-dialog")).toBeVisible();
+  await page.locator("#password-cancel").click();
+  await expect(page.locator("#document-name")).toHaveText("Alpha");
+});
+
+test("note switcher does not interrupt another dialog", async ({ page }) => {
+  await native(page);
+  await page.keyboard.press("F1");
+  await page.keyboard.press("Control+Tab");
+  await expect(page.locator("#shortcuts-dialog")).toBeVisible();
+  await expect(page.locator("#note-switcher")).not.toBeVisible();
+});
+
+test("Private locks clear the note switcher and its search immediately", async ({ page }) => {
+  await privateNote(page);
+  await switchNotes(page);
+  await expect(page.locator("#note-switcher-results")).toContainText("Secret title");
+  await page.getByRole("combobox", { name: "Search notes in this folder" }).fill("Secret");
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(page.locator("#note-switcher")).not.toBeVisible();
+  await expect(page.locator("#note-switcher-results")).toBeEmpty();
+  await expect(page.locator("#note-switcher-query")).toHaveValue("");
+  await expect.poll(() => page.evaluate(() => (window as any).privateUnlocked)).toBe(false);
+});
+
+test("a delayed private note list cannot repopulate the switcher after locking", async ({ page }) => {
+  await privateNote(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    const original = w.__TAURI_INTERNALS__.invoke;
+    let delay = true;
+    w.__TAURI_INTERNALS__.invoke = async (command: string, args: any = {}) => {
+      const result = await original(command, args);
+      if (delay && command === "list_folder" && args.path.startsWith("/notes/.private")) {
+        delay = false;
+        return new Promise((resolve) => { w.finishSwitcherList = () => resolve(result); });
+      }
+      return result;
+    };
+  });
+  await page.keyboard.press("Control+Tab");
+  await expect(page.locator("#note-switcher-status")).toHaveText("Loading notes…");
+  await expect.poll(() => page.evaluate(() => typeof (window as any).finishSwitcherList)).toBe("function");
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(page.locator("#note-switcher")).not.toBeVisible();
+  await page.evaluate(() => (window as any).finishSwitcherList());
+  await expect(page.locator("#note-switcher-results")).toBeEmpty();
+  await expect(page.locator("#note-switcher")).not.toContainText("Secret title");
+});
+
+
+test("About shows Yaz description before the current app version", async ({ page }) => {
+  await native(page);
+  await page.evaluate(() => (window as any).fireAbout());
+  await expect(page.locator("#about-dialog")).toBeVisible();
+  await expect(page.locator("#about-description")).toHaveText("codex is so cool, a simple text app by Yaz");
+  await expect(page.locator("#about-version")).toHaveText("Version 0.1.11");
+  expect(await page.evaluate(() => !!(document.getElementById("about-description")!.compareDocumentPosition(document.getElementById("about-version")!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  await page.locator("#close-about").click();
+  await expect(page.locator("#about-dialog")).not.toBeVisible();
 });
