@@ -314,6 +314,7 @@ header {
 }
 .katex-error {
   color: #c58a80 !important;
+  white-space: pre-wrap;
 }
 #notice {
   position: fixed;

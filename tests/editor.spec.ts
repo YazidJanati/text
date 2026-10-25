@@ -1967,3 +1967,37 @@ test("live display previews use shared definitions and refresh while editing", a
   });
   await expect(page.locator(".math-live-preview .katex-html")).toHaveText("B");
 });
+
+
+test("starting a LaTeX command never exposes shared definitions in the live preview", async ({ page }) => {
+  const definitions = String.raw`\newcommand{\custom}{A}`;
+  await native(page, { "/notes/Untitled.md": "", "/notes/def.tex": definitions });
+  await replace(page, "$$\n");
+  await page.keyboard.type("\\");
+  const preview = page.locator(".math-live-preview");
+  await expect(preview.locator(".katex-error")).toHaveText("\\");
+  expect(await preview.innerHTML()).not.toContain(definitions);
+  await expect(preview).toHaveAttribute("aria-label", "\\");
+  await page.keyboard.type("custom");
+  await expect(preview.locator(".katex-html")).toHaveText("A");
+  await expect(preview.locator(".katex-error")).toHaveCount(0);
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe("$$\n\\custom");
+});
+
+test("invalid inline and display math show only their source with shared definitions", async ({ page }) => {
+  const definitions = String.raw`\def\custom{A}`;
+  const broken = String.raw`\frac{x}`;
+  const source = `Inline $${broken}$.\n\n$$\n${broken}\n$$\n\nEnd`;
+  await native(page, { "/notes/Untitled.md": "", "/notes/def.tex": definitions });
+  await replace(page, source);
+  const errors = page.locator(".katex-error");
+  await expect(errors).toHaveCount(2);
+  for (const error of await errors.all()) {
+    await expect(error).toHaveText(broken);
+    expect(await error.evaluate(el => el.outerHTML)).not.toContain(definitions);
+    await expect(error.locator("*")).toHaveCount(0);
+  }
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe(source);
+});

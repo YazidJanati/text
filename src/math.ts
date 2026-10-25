@@ -62,6 +62,13 @@ class MathWidget extends WidgetType {
       throwOnError: false,
       output: "htmlAndMathml",
     });
+    // KaTeX's parse-error fallback includes its entire input, including def.tex.
+    // Incomplete commands are normal while typing; show only the equation.
+    const error = el.querySelector<HTMLElement>(".katex-error");
+    if (error) {
+      error.textContent = this.source;
+      error.title = "Incomplete or invalid LaTeX.";
+    }
     el.addEventListener("mousedown", (event) => {
       event.preventDefault();
       view.dispatch({
