@@ -77,7 +77,7 @@ The app autosaves, so `:q` also flushes pending edits. An external-change confli
 
 The sidebar shortcut has priority over Vim's Ctrl+B page motion. Sidebar visibility, Vim preference, and the last note are remembered. Notes inside collapsed folders open with their ancestors expanded.
 
-Markdown markers are visible on the line containing the cursor and are rendered inline elsewhere. Headings, emphasis, lists, tasks, blockquotes, rules, code, and links are supported. Inline equations render as soon as the closing `$` is followed by a space; you can keep writing on the same line. Clicking a rendered equation, selecting it, or moving the cursor inside reveals its source. Display equations stay editable while the cursor is in their block. Use `$E=mc^2$` for inline math and `$$` on separate lines for display math:
+Markdown markers are visible on the line containing the cursor and are rendered inline elsewhere. Headings, emphasis, lists, tasks, blockquotes, rules, code, and links are supported. Inline equations render as soon as the closing `$` is followed by a space; you can keep writing on the same line. Clicking a rendered equation, selecting it, or moving the cursor inside reveals its source. Display equations show editable source with a live preview beneath it while you type, including before closing `$$`. Outside the equation, they collapse to the rendered form. Up/Down re-enter the equation source instead of skipping the rendered block. The nearest enclosing `{}`, `[]`, or `()` pair is highlighted while editing math; unfinished opening brackets and unmatched closing brackets have distinct highlights. Use `$E=mc^2$` for inline math and `$$` on separate lines for display math:
 
 ```markdown
 $$

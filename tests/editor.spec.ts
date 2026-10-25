@@ -439,7 +439,7 @@ test("inline and display math render, click reveals source, and Markdown stays i
   expect(errors).toEqual([]);
   await page.screenshot({ path: "tests/notes-math.png" });
   await page.locator(".math-block").click();
-  await expect(page.locator(".math-block")).toHaveCount(0);
+  await expect(page.locator(".math-live-preview .katex")).toHaveCount(1);
   await expect(page.locator(".cm-content")).toContainText("\\int_0^1");
 });
 
@@ -1840,4 +1840,130 @@ test("About shows Yaz description before the current app version", async ({ page
   expect(await page.evaluate(() => !!(document.getElementById("about-description")!.compareDocumentPosition(document.getElementById("about-version")!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
   await page.locator("#close-about").click();
   await expect(page.locator("#about-dialog")).not.toBeVisible();
+});
+
+
+test("display math previews while typing before closing dollars or pressing Enter", async ({ page }) => {
+  await native(page);
+  await regular(page);
+  await page.keyboard.insertText("$$\nx^2");
+  await expect(page.locator(".math-live-preview .katex")).toHaveCount(1);
+  await expect(page.locator(".math-live-preview")).toHaveAttribute("aria-label", "x^2");
+  await page.keyboard.type("+y");
+  await expect(page.locator(".math-live-preview")).toHaveAttribute("aria-label", "x^2+y");
+  await page.keyboard.insertText("\n$$");
+  await expect(page.locator(".math-live-preview .katex")).toHaveCount(1);
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe("$$\nx^2+y\n$$");
+});
+test("Up returns to display equation source instead of jumping to preceding prose", async ({ page }) => {
+  await native(page);
+  await replace(page, "Before\n\n$$\nx^2\n$$\n");
+  await expect(page.locator(".math-block:not(.math-live-preview) .katex")).toHaveCount(1);
+  await page.keyboard.press("ArrowUp");
+  await expect(page.locator(".math-live-preview .katex")).toHaveCount(1);
+  await page.keyboard.type("y+");
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe("Before\n\n$$\ny+x^2\n$$\n");
+});
+test("Vim arrow Up re-enters rendered display math without skipping it", async ({ page }) => {
+  await native(page);
+  await replace(page, "Before\n\n$$\nx^2\n$$\n");
+  await page.keyboard.press(`${mod}+Alt+v`);
+  await page.keyboard.press("ArrowUp");
+  await expect(page.locator(".math-live-preview .katex")).toHaveCount(1);
+  await page.keyboard.type("iy+");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe("Before\n\n$$\ny+x^2\n$$\n");
+});
+test("math highlights the enclosing pair and an unfinished opening brace", async ({ page }) => {
+  await native(page);
+  await replace(page, "$$\n{(abc)}\n$$\n");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator(".math-matching-bracket")).toHaveText(["(", ")"]);
+  await replace(page, "$$\n\\frac{abc");
+  await expect(page.locator(".math-open-bracket")).toHaveText("{");
+  await page.keyboard.type("}");
+  await expect(page.locator(".math-matching-bracket")).toHaveText(["{", "}"]);
+});
+
+
+test("Down enters a rendered equation and Up enters the last line of multiline math", async ({ page }) => {
+  await native(page);
+  await replace(page, "Before\n$$\nx+y\nz+w\n$$\n");
+  await page.keyboard.press(`${mod}+a`);
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowDown");
+  await expect(page.locator(".math-live-preview .katex")).toHaveCount(1);
+  await page.keyboard.type("a+");
+  await page.keyboard.press(`${mod}+a`);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.type("b+");
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe("Before\n$$\na+x+y\nb+z+w\n$$\n");
+});
+test("Up on wrapped prose stays in the text until it reaches the equation", async ({ page }) => {
+  await native(page);
+  const prose = "word ".repeat(100);
+  await replace(page, "$$\nx^2\n$$\n" + prose);
+  await page.keyboard.press("ArrowUp");
+  await expect(page.locator(".math-live-preview")).toHaveCount(0);
+  await page.keyboard.type("MARK");
+  await page.keyboard.press(`${mod}+s`);
+  const saved = await disk(page);
+  expect(saved.startsWith("$$\nx^2\n$$\n")).toBe(true);
+  expect(saved.slice("$$\nx^2\n$$\n".length)).toContain("MARK");
+});
+test("unfinished inline math highlights grouping braces before the closing dollar", async ({ page }) => {
+  await native(page);
+  await replace(page, "$\\frac{x}{abc");
+  await expect(page.locator(".math-open-bracket")).toHaveText("{");
+  await page.keyboard.type("}");
+  await expect(page.locator(".math-matching-bracket")).toHaveText(["{", "}"]);
+  await page.keyboard.type("$ ");
+  await expect(page.locator(".math-inline .katex")).toHaveCount(1);
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe("$\\frac{x}{abc}$ ");
+});
+test("square brackets, escaped braces and unmatched closers have correct highlights", async ({ page }) => {
+  await native(page);
+  await replace(page, "$$\n[abc");
+  await expect(page.locator(".math-open-bracket")).toHaveText("[");
+  await page.keyboard.type("]");
+  await expect(page.locator(".math-matching-bracket")).toHaveText(["[", "]"]);
+  await replace(page, "$$\n\\left\\{x_{i}\\right\\}\n$$\n");
+  await page.keyboard.press("ArrowUp");
+  for (let i = 0; i < 7; i++) await page.keyboard.press("ArrowRight");
+  await expect(page.locator(".math-matching-bracket")).toHaveText(["\\{", "\\}"]);
+  await replace(page, "$$\nabc}");
+  await expect(page.locator(".math-unmatched-bracket")).toHaveText("}");
+});
+test("display math inside code stays literal, including an unfinished block", async ({ page }) => {
+  await native(page);
+  const source = "```tex\n$$\nx_{i}^2\n$$\n```\n\n```tex\n$$\nx_{i}^2";
+  await replace(page, source);
+  await expect(page.locator(".math-block")).toHaveCount(0);
+  await expect(page.locator(".math-open-bracket, .math-matching-bracket")).toHaveCount(0);
+  await page.keyboard.press(`${mod}+s`);
+  expect(await disk(page)).toBe(source);
+  // An orphan opening delimiter before a code block must not restart scanning.
+  await replace(page, "$$\nunfinished\n\n```tex\nliteral");
+  await expect(page.locator(".math-block")).toHaveCount(0);
+  await page.keyboard.type(" text");
+  await expect(page.locator(".cm-content")).toContainText("literal text");
+});
+test("live display previews use shared definitions and refresh while editing", async ({ page }) => {
+  await native(page, { "/notes/First.md": "", "/notes/def.tex": String.raw`\def\custom{A}` });
+  await replace(page, "$$\n\\custom");
+  await expect(page.locator(".math-live-preview .katex-html")).toHaveText("A");
+  await page.evaluate(() => {
+    (window as any).testFiles["/notes/def.tex"] = String.raw`\def\custom{B}`;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.locator(".math-live-preview .katex-html")).toHaveText("B");
 });

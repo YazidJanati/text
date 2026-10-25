@@ -621,3 +621,22 @@ button:disabled {
 
 #about-description { margin: 0 0 14px; }
 #about-version { color: #999; margin-bottom: 0; }
+
+.math-live-preview {
+  border-left: 2px solid #3b4148;
+  margin: 4px 0 8px;
+  padding: 4px 12px;
+}
+.math-matching-bracket {
+  background: #35485d;
+  outline: 1px solid #7696b8;
+  border-radius: 1px;
+}
+.math-open-bracket {
+  background: #51452b;
+  outline: 1px solid #a68b4a;
+}
+.math-unmatched-bracket {
+  background: #593334;
+  outline: 1px solid #b56b6b;
+}

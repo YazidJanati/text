@@ -1,5 +1,5 @@
 import { vimCompartment, vimExtension } from "./vim";
-import { mathPreview } from "./math";
+import { mathPreview, mathNavigation, mathBrackets } from "./math";
 import { Compartment, EditorState, EditorSelection } from "@codemirror/state";
 import {
   EditorView,
@@ -311,6 +311,8 @@ export function makeState(doc: string, onChange: () => void) {
       markdown({ base: markdownLanguage, extensions: [GFM] }),
       livePreview,
       mathPreview,
+      mathNavigation,
+      mathBrackets,
       theme,
       textSize.of(textSizeTheme()),
       EditorView.lineWrapping,
